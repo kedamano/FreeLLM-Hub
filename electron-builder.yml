@@ -1,0 +1,34 @@
+appId: com.freellmhub.app
+productName: FreeLLM Hub
+copyright: Copyright (c) 2026 FreeLLM Hub Team
+
+directories:
+  output: release
+  buildResources: resources
+
+files:
+  - dist/**/*
+  - package.json
+  - "!**/*.map"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  icon: resources/icons/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: FreeLLM Hub
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+
+asar: true
+compression: maximum

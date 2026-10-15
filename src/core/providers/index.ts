@@ -1,0 +1,10 @@
+export { getProviderRegistry } from './registry.js';
+export type { ProviderAdapter, ChatOptions, StreamChunk, ProviderUsageInfo } from './contracts.js';
+export { createGroqAdapter } from './groq/adapter.js';
+export { createGoogleGeminiAdapter } from './google-gemini/adapter.js';
+export { createCloudflareAdapter } from './cloudflare/adapter.js';
+export { createHuggingFaceAdapter } from './huggingface/adapter.js';
+export { createCerebrasAdapter } from './cerebras/adapter.js';
+export { createOllamaAdapter } from './local/ollama-adapter.js';
+export { createLMStudioAdapter } from './local/lmstudio-adapter.js';
+export { OpenAICompatibleAdapter } from './openai-compatible/adapter.js';

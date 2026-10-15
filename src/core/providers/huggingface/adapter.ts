@@ -1,0 +1,71 @@
+import { OpenAICompatibleAdapter } from '../openai-compatible/adapter.js';
+
+export function createHuggingFaceAdapter(token?: string): OpenAICompatibleAdapter {
+  return new OpenAICompatibleAdapter({
+    providerId: 'huggingface',
+    providerName: 'Hugging Face Inference',
+    baseUrl: 'https://api-inference.huggingface.co/v1',
+    authType: 'api-key',
+    credentialId: token ? 'hf-token' : undefined,
+    defaultHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+    models: [
+      {
+        id: 'meta-llama/Llama-3.1-8B-Instruct',
+        providerId: 'huggingface',
+        displayName: 'Llama 3.1 8B Instruct',
+        description: 'Meta Llama 3.1 8B - free inference API',
+        capabilities: {
+          supported: ['chat', 'completion', 'streaming'],
+          contextWindow: 131072,
+          maxOutputTokens: 2048,
+          supportsStreaming: true,
+          supportsVision: false,
+          supportsFunctionCalling: false,
+          supportsJsonMode: false,
+        },
+        pricing: { type: 'free', currency: 'USD', notes: 'Free with rate limits' },
+        rateLimits: { requestsPerMinute: 200, tokensPerMinute: 50000 },
+        status: 'available',
+        discoveredAt: new Date().toISOString(),
+      },
+      {
+        id: 'google/gemma-7b-it',
+        providerId: 'huggingface',
+        displayName: 'Gemma 7B IT',
+        description: 'Google Gemma 7B instruction-tuned',
+        capabilities: {
+          supported: ['chat', 'completion', 'streaming'],
+          contextWindow: 8192,
+          maxOutputTokens: 2048,
+          supportsStreaming: true,
+          supportsVision: false,
+          supportsFunctionCalling: false,
+          supportsJsonMode: false,
+        },
+        pricing: { type: 'free', currency: 'USD', notes: 'Free with rate limits' },
+        rateLimits: { requestsPerMinute: 200, tokensPerMinute: 50000 },
+        status: 'available',
+        discoveredAt: new Date().toISOString(),
+      },
+      {
+        id: 'microsoft/Phi-3-mini-4k-instruct',
+        providerId: 'huggingface',
+        displayName: 'Phi-3 Mini 4K',
+        description: 'Microsoft Phi-3 Mini - compact high-quality model',
+        capabilities: {
+          supported: ['chat', 'completion', 'streaming'],
+          contextWindow: 4096,
+          maxOutputTokens: 2048,
+          supportsStreaming: true,
+          supportsVision: false,
+          supportsFunctionCalling: false,
+          supportsJsonMode: false,
+        },
+        pricing: { type: 'free', currency: 'USD', notes: 'Free with rate limits' },
+        rateLimits: { requestsPerMinute: 200, tokensPerMinute: 50000 },
+        status: 'available',
+        discoveredAt: new Date().toISOString(),
+      },
+    ],
+  });
+}

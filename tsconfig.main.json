@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/main/**/*", "src/core/**/*", "src/shared/**/*", "src/usage/**/*", "src/scheduler/**/*", "src/preload/**/*"],
+  "exclude": ["node_modules", "dist", "tests", "src/renderer"]
+}
