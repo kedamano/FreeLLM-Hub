@@ -1,16 +1,18 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
 import { Scheduler } from '../../scheduler/scheduler.js';
 import { recordCall } from '../../usage/usage-recorder.js';
 import { getProviderRegistry } from '../../core/providers/registry.js';
-import {
-  GatewayRequestSchema,
-  type GatewayRequest,
-  type GatewayResponse,
-  type ProviderId,
+import type {
+  GatewayRequest,
+  GatewayResponse,
+  ProviderId,
 } from '../../shared/types/index.js';
-import { generateRequestId, safeJsonParse } from '../../shared/utils/index.js';
+import { generateRequestId } from '../../shared/utils/index.js';
 import type { ChatOptions } from '../../core/providers/contracts.js';
+import { AllProvidersFailedError, RateLimitError, AuthenticationError } from '../../shared/errors/index.js';
+import { redactSecrets } from '../security/secret-redaction.js';
+import { registerCommonMiddleware } from './middleware.js';
 
 export interface GatewayServerOptions {
   host?: string;
@@ -45,6 +47,7 @@ export class GatewayServer {
     await this.app.register(cors, { origin: true });
 
     this.registerRoutes();
+    registerCommonMiddleware(this.app);
 
     await this.app.listen({ host: this.host, port: this.port });
 
@@ -117,6 +120,16 @@ export class GatewayServer {
       const requestId = generateRequestId();
       const startTime = Date.now();
 
+      if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+        return reply.status(400).send({
+          error: {
+            message: 'messages field is required and must be a non-empty array',
+            type: 'invalid_request',
+            code: 'BAD_REQUEST',
+          },
+        });
+      }
+
       const gatewayRequest: GatewayRequest = {
         requestId,
         messages: body.messages.map((m) => ({
@@ -179,28 +192,29 @@ export class GatewayServer {
       };
 
       return reply.send(response);
-    } catch (err) {
-      recordCall({
-        requestId: request.requestId,
-        providerId: 'unknown' as ProviderId,
-        modelId: 'unknown',
-        taskType: request.taskType,
-        status: 'error',
-        durationMs: Date.now() - startTime,
-        promptTokens: 0,
-        completionTokens: 0,
-        errorMessage: err instanceof Error ? err.message : String(err),
-      });
+      } catch (err) {
+        recordCall({
+          requestId: request.requestId,
+          providerId: 'unknown' as ProviderId,
+          modelId: 'unknown',
+          taskType: request.taskType,
+          status: 'error',
+          durationMs: Date.now() - startTime,
+          promptTokens: 0,
+          completionTokens: 0,
+          errorMessage: err instanceof Error ? err.message : String(err),
+        });
 
-      return reply.status(503).send({
-        error: {
-          message: err instanceof Error ? err.message : 'All providers unavailable',
-          type: 'no_providers_available',
-          code: 'ALL_FAILED',
-        },
-      });
+        const statusCode = getErrorStatusCode(err);
+        return reply.status(statusCode).send({
+          error: {
+            message: getSafeErrorMessage(err),
+            type: getErrorType(err),
+            code: getErrorCode(err),
+          },
+        });
+      }
     }
-  }
 
   private handleStreamRequest(
     reply: import('fastify').FastifyReply,
@@ -260,8 +274,9 @@ export class GatewayServer {
       } catch (err) {
         const errorData = JSON.stringify({
           error: {
-            message: err instanceof Error ? err.message : 'Stream error',
-            type: 'stream_error',
+            message: redactSecrets(getSafeErrorMessage(err)),
+            type: getErrorType(err),
+            code: getErrorCode(err),
           },
         });
         reply.raw.write(`data: ${errorData}\n\n`);
@@ -272,4 +287,41 @@ export class GatewayServer {
 
     return reply;
   }
+}
+
+function getErrorStatusCode(err: unknown): number {
+  if (err instanceof RateLimitError) return 429;
+  if (err instanceof AuthenticationError) return 401;
+  if (err instanceof AllProvidersFailedError) return 503;
+  return 502;
+}
+
+function getSafeErrorMessage(err: unknown): string {
+  if (err instanceof RateLimitError) {
+    return 'Rate limited by provider. Please try again later.';
+  }
+  if (err instanceof AuthenticationError) {
+    return 'Authentication failed. Please check your API key configuration.';
+  }
+  if (err instanceof AllProvidersFailedError) {
+    return 'All providers are currently unavailable. Please try again later.';
+  }
+  if (err instanceof Error) {
+    return 'An error occurred while processing your request.';
+  }
+  return 'Unknown error occurred.';
+}
+
+function getErrorType(err: unknown): string {
+  if (err instanceof RateLimitError) return 'rate_limited';
+  if (err instanceof AuthenticationError) return 'auth_error';
+  if (err instanceof AllProvidersFailedError) return 'no_providers_available';
+  return 'server_error';
+}
+
+function getErrorCode(err: unknown): string {
+  if (err instanceof RateLimitError) return 'RATE_LIMITED';
+  if (err instanceof AuthenticationError) return 'AUTH_FAILED';
+  if (err instanceof AllProvidersFailedError) return 'ALL_FAILED';
+  return 'SERVER_ERROR';
 }
