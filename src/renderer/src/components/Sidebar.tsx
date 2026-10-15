@@ -1,3 +1,5 @@
+import React from 'react';
+
 type Page = 'dashboard' | 'providers' | 'models' | 'usage' | 'settings';
 
 interface SidebarProps {
