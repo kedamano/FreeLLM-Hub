@@ -1,10 +1,11 @@
 import type { Scheduler } from '../../scheduler/scheduler.js';
 import type { ModelCapabilities, ModelPricing, ProviderModel } from '../../shared/types/index.js';
 import { getProviderRegistry } from '../../core/providers/index.js';
-import { applyEnabled, applyCredential, hotSwap, ENABLED_KEY_PREFIX } from '../../core/providers/bootstrap.js';
+import { applyEnabled, applyCredential, hotSwap, ENABLED_KEY_PREFIX, makeCustomProviderId } from '../../core/providers/bootstrap.js';
+import { OpenAICompatibleAdapter } from '../../core/providers/openai-compatible/adapter.js';
 import { getCredentialStore } from '../security/credential-store.js';
 import { redactSecrets } from '../security/secret-redaction.js';
-import { writeSetting } from '../../core/settings/settings-store.js';
+import { deleteSetting, writeSetting } from '../../core/settings/settings-store.js';
 import { getDatabase } from '../../core/database/database.js';
 
 export function listProviders(scheduler: Scheduler) {
@@ -108,6 +109,84 @@ export function updateProviderBaseUrl(
   }
   const api = hotSwap(adapter);
   if (typeof api.updateBaseUrl === 'function') api.updateBaseUrl(baseUrl);
+  if (!adapter.getProviderConfig().isBuiltIn) {
+    try {
+      getDatabase()
+        .prepare("UPDATE providers SET base_url = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(baseUrl, providerId);
+    } catch (err) {
+      console.warn(`[providers] failed to persist base URL for ${providerId}:`, err);
+    }
+  }
+  return { success: true };
+}
+
+export function createCustomProvider(input: {
+  name?: unknown;
+  baseUrl?: unknown;
+  apiKey?: unknown;
+}): { success: boolean; providerId?: string; error?: string } {
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim().replace(/\/$/, '') : '';
+  const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+
+  if (!name || name.length > 60) return { success: false, error: '名称无效（1-60 个字符）' };
+  if (!/^https?:\/\/[^\s]+$/i.test(baseUrl)) return { success: false, error: 'Base URL 必须以 http(s):// 开头' };
+
+  const registry = getProviderRegistry();
+  const db = getDatabase();
+  const taken = new Set<string>([
+    ...registry.getAll().map((a) => a.providerId),
+    ...(db.prepare('SELECT id FROM providers').all() as Array<{ id: string }>).map((r) => r.id),
+  ]);
+  const providerId = makeCustomProviderId(name, taken);
+
+  const adapter = new OpenAICompatibleAdapter({
+    providerId,
+    providerName: name,
+    baseUrl,
+    authType: 'api-key',
+    isBuiltIn: false,
+    credentialId: apiKey ? `${providerId}-key` : undefined,
+    defaultHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+  });
+  registry.register(adapter);
+
+  db.prepare(`
+    INSERT INTO providers (id, display_name, auth_type, base_url, is_enabled, is_built_in, credential_status)
+    VALUES (?, ?, 'api-key', ?, 1, 0, ?)
+  `).run(providerId, name, baseUrl, apiKey ? 'configured' : 'unconfigured');
+  writeSetting(`${ENABLED_KEY_PREFIX}${providerId}`, 'true');
+
+  if (apiKey) {
+    try {
+      getCredentialStore().store(`${providerId}-key`, apiKey);
+    } catch (err) {
+      registry.unregister(providerId);
+      db.prepare('DELETE FROM providers WHERE id = ?').run(providerId);
+      return { success: false, error: redactSecrets(err instanceof Error ? err.message : '凭证存储失败') };
+    }
+  }
+  return { success: true, providerId };
+}
+
+export function deleteCustomProvider(scheduler: Scheduler, providerId: string): { success: boolean; error?: string } {
+  const registry = getProviderRegistry();
+  const adapter = registry.get(providerId);
+  if (!adapter) return { success: false, error: 'Provider not found' };
+  if (adapter.getProviderConfig().isBuiltIn) return { success: false, error: '内置供应商不可删除' };
+
+  registry.unregister(providerId);
+  try {
+    getCredentialStore().delete(`${providerId}-key`);
+  } catch {
+    // credential store may be unavailable; provider row removal still proceeds
+  }
+  deleteSetting(`${ENABLED_KEY_PREFIX}${providerId}`);
+  const db = getDatabase();
+  db.prepare('DELETE FROM providers WHERE id = ?').run(providerId);
+  db.prepare('DELETE FROM models WHERE provider_id = ?').run(providerId);
+  scheduler.forgetProvider(providerId);
   return { success: true };
 }
 

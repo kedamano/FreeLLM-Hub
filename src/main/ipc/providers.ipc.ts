@@ -33,4 +33,10 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
   registerIpcHandler('providers:get-models', async (_e, providerId: string) =>
     providerService.getPersistedProviderModels(providerId)
   );
+  registerIpcHandler('providers:create-custom', async (_e, input) =>
+    providerService.createCustomProvider(input)
+  );
+  registerIpcHandler('providers:delete-custom', async (_e, providerId: string) =>
+    providerService.deleteCustomProvider(scheduler, providerId)
+  );
 }

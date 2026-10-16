@@ -20,6 +20,12 @@ interface Window {
         error?: string;
       }>;
       getModels: (providerId: string) => Promise<unknown[]>;
+      createCustom: (input: {
+        name: string;
+        baseUrl: string;
+        apiKey?: string;
+      }) => Promise<{ success: boolean; providerId?: string; error?: string }>;
+      deleteCustom: (providerId: string) => Promise<{ success: boolean; error?: string }>;
     };
     models: {
       list: () => Promise<unknown[]>;

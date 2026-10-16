@@ -19,6 +19,10 @@ const api = {
       ipcRenderer.invoke('providers:discover-models', providerId),
     getModels: (providerId: string) =>
       ipcRenderer.invoke('providers:get-models', providerId),
+    createCustom: (input: { name: string; baseUrl: string; apiKey?: string }) =>
+      ipcRenderer.invoke('providers:create-custom', input),
+    deleteCustom: (providerId: string) =>
+      ipcRenderer.invoke('providers:delete-custom', providerId),
   },
 
   models: {

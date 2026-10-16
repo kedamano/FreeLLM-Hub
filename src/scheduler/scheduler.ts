@@ -62,6 +62,10 @@ export class Scheduler {
     this.providerConfigs.set(config.id, config);
   }
 
+  forgetProvider(providerId: ProviderId): void {
+    this.providerConfigs.delete(providerId);
+  }
+
   setQuotaConfig(config: QuotaConfig): void {
     this.quotaManager.setConfig(config);
   }

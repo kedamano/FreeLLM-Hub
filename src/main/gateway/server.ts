@@ -18,6 +18,17 @@ import { registerCommonMiddleware } from './middleware.js';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const LOCAL_ORIGIN = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i;
 
+function isSelfUrl(baseUrl: string | undefined, host: string, port: number): boolean {
+  if (!baseUrl) return false;
+  try {
+    const u = new URL(baseUrl);
+    const h = u.hostname === 'localhost' ? '127.0.0.1' : u.hostname;
+    return h === host && Number(u.port || 80) === port;
+  } catch {
+    return false;
+  }
+}
+
 export interface GatewayServerOptions {
   host?: string;
   port?: number;
@@ -168,9 +179,14 @@ export class GatewayServer {
       const registry = getProviderRegistry();
       const adapters = registry.getAll();
       const models: Array<Record<string, unknown>> = [];
+      const selfList = this.app!.addresses();
+      const selfAddr = selfList.length > 0 ? selfList[0] : null;
 
       for (const adapter of adapters) {
-        if (!adapter.getProviderConfig().isEnabled) continue;
+        const config = adapter.getProviderConfig();
+        if (!config.isEnabled) continue;
+        // A provider pointed back at this gateway would recurse forever.
+        if (selfAddr && isSelfUrl(config.baseUrl, selfAddr.address, selfAddr.port)) continue;
         try {
           const providerModels = await adapter.listModels();
           for (const m of providerModels) {

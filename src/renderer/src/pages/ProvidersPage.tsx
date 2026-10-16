@@ -217,6 +217,13 @@ export default function ProvidersPage() {
   const [discovering, setDiscovering] = useState(false);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
 
+  // Custom provider creation form
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newBaseUrl, setNewBaseUrl] = useState('');
+  const [newApiKey, setNewApiKey] = useState('');
+  const [creating, setCreating] = useState(false);
+
   // Inline toast (replaces alert())
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const toastTimer = useRef<number | null>(null);
@@ -455,6 +462,67 @@ export default function ProvidersPage() {
     [selectedId, loadProviders, showToast, requireApi]
   );
 
+  const handleCreateCustom = useCallback(async () => {
+    const api = requireApi();
+    if (!api) return;
+    if (!newName.trim() || !/^https?:\/\/\S+$/i.test(newBaseUrl.trim())) {
+      showToast('error', '请填写名称和以 http(s):// 开头的 Base URL');
+      return;
+    }
+    setCreating(true);
+    try {
+      const res = await api.providers.createCustom({
+        name: newName.trim(),
+        baseUrl: newBaseUrl.trim(),
+        apiKey: newApiKey.trim() || undefined,
+      });
+      if (!res.success || !res.providerId) {
+        showToast('error', res.error || '创建失败');
+        setCreating(false);
+        return;
+      }
+      const newId = res.providerId;
+      setShowAddForm(false);
+      setNewName('');
+      setNewBaseUrl('');
+      setNewApiKey('');
+      setCreating(false);
+      await loadProviders();
+      setActiveGroup('custom');
+      setSelectedId(newId);
+      setDiscoveredModels([]);
+      if (newApiKey.trim()) {
+        const discovered = await api.providers.discoverModels(newId);
+        if (discovered.success && discovered.models) setDiscoveredModels(discovered.models as ProviderModel[]);
+      }
+      showToast('success', '自定义供应商已创建');
+    } catch (err) {
+      setCreating(false);
+      showToast('error', err instanceof Error ? err.message : '创建失败');
+    }
+  }, [newName, newBaseUrl, newApiKey, loadProviders, showToast, requireApi]);
+
+  const handleDeleteCustom = useCallback(async () => {
+    if (!selectedId) return;
+    const api = requireApi();
+    if (!api) return;
+    if (!window.confirm('确定删除该自定义供应商？其模型与凭证将一并移除。')) return;
+    try {
+      const res = await api.providers.deleteCustom(selectedId);
+      if (!res.success) {
+        showToast('error', res.error || '删除失败');
+        return;
+      }
+      lastSyncedId.current = null;
+      setSelectedId(null);
+      setDiscoveredModels([]);
+      await loadProviders();
+      showToast('success', '供应商已删除');
+    } catch {
+      showToast('error', '删除失败');
+    }
+  }, [selectedId, loadProviders, showToast, requireApi]);
+
   //── Render ────────────────────────────────────────────────────────
 
   if (loading) {
@@ -531,6 +599,17 @@ export default function ProvidersPage() {
               )}
             </div>
           ))}
+          <div className="mt-auto p-3 border-t border-surface-100">
+            <button
+              onClick={() => setShowAddForm(true)}
+              className="w-full px-3 py-2 rounded-lg text-xs font-medium text-primary-600 bg-primary-50/60 hover:bg-primary-50 border border-primary-100 transition-colors"
+            >
+              ＋ 添加自定义供应商
+            </button>
+            <p className="mt-1.5 text-[10px] text-surface-400 leading-relaxed">
+              支持任意 OpenAI 兼容 API（含中转站）
+            </p>
+          </div>
         </aside>
 
         {/* Right panel: configuration */}
@@ -550,6 +629,7 @@ export default function ProvidersPage() {
               onUpdateBaseUrl={handleUpdateBaseUrl}
               onTest={handleTest}
               onToggle={handleToggle}
+              onDeleteCustom={selectedProvider && !selectedProvider.isBuiltIn ? handleDeleteCustom : undefined}
               discoveredModels={discoveredModels}
               setDiscoveredModels={setDiscoveredModels}
               discovering={discovering}
@@ -563,6 +643,59 @@ export default function ProvidersPage() {
           )}
         </section>
       </div>
+
+      {showAddForm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          onClick={() => setShowAddForm(false)}
+        >
+          <div
+            className="w-[26rem] bg-white rounded-card shadow-xl p-5"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="添加自定义供应商"
+          >
+            <h3 className="text-sm font-semibold text-surface-800 mb-1">添加自定义供应商</h3>
+            <p className="text-xs text-surface-500 mb-4">
+              支持任意 OpenAI 兼容 API（含中转站），Base URL 通常以 /v1 结尾
+            </p>
+            <label className="label">名称</label>
+            <input
+              className="input-field mb-3"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="如：我的中转站"
+            />
+            <label className="label">Base URL</label>
+            <input
+              className="input-field mb-3 font-mono text-xs"
+              value={newBaseUrl}
+              onChange={(e) => setNewBaseUrl(e.target.value)}
+              placeholder="https://api.example.com/v1"
+            />
+            <label className="label">API Key（可选，可稍后配置）</label>
+            <input
+              type="password"
+              className="input-field mb-4 font-mono text-xs"
+              value={newApiKey}
+              onChange={(e) => setNewApiKey(e.target.value)}
+              placeholder="sk-..."
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowAddForm(false)} className="btn-secondary text-xs">
+                取消
+              </button>
+              <button
+                onClick={handleCreateCustom}
+                disabled={creating}
+                className="btn-primary text-xs"
+              >
+                {creating ? '创建中…' : '创建'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -583,6 +716,7 @@ interface ConfigPanelProps {
   onUpdateBaseUrl: () => Promise<void>;
   onTest: () => Promise<void>;
   onToggle: (enabled: boolean) => Promise<void>;
+  onDeleteCustom?: () => Promise<void>;
   discoveredModels: ProviderModel[];
   setDiscoveredModels: (m: ProviderModel[]) => void;
   discovering: boolean;
@@ -604,6 +738,7 @@ const ConfigPanel = memo(function ConfigPanel({
   onUpdateBaseUrl,
   onTest,
   onToggle,
+  onDeleteCustom,
   discoveredModels,
   discovering,
   discoverError,
@@ -621,15 +756,22 @@ const ConfigPanel = memo(function ConfigPanel({
             <p className="text-sm text-surface-500 mt-1">{provider.metadata.description}</p>
           )}
         </div>
-        <label className="flex items-center gap-2 cursor-pointer shrink-0 ml-4">
-          <span className="text-xs text-surface-500">{provider.isEnabled ? '已启用' : '已禁用'}</span>
-          <input
-            type="checkbox"
-            checked={provider.isEnabled}
-            onChange={(e) => onToggle(e.target.checked)}
-            className="w-4 h-4 rounded border-surface-300 text-primary-600 focus:ring-primary-500"
-          />
-        </label>
+        <div className="flex items-center gap-3 shrink-0 ml-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <span className="text-xs text-surface-500">{provider.isEnabled ? '已启用' : '已禁用'}</span>
+            <input
+              type="checkbox"
+              checked={provider.isEnabled}
+              onChange={(e) => onToggle(e.target.checked)}
+              className="w-4 h-4 rounded border-surface-300 text-primary-600 focus:ring-primary-500"
+            />
+          </label>
+          {onDeleteCustom && (
+            <button onClick={onDeleteCustom} className="btn-danger text-xs">
+              删除供应商
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Base URL */}

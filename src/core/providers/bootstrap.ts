@@ -1,4 +1,6 @@
 import { getProviderRegistry } from './registry.js';
+import { OpenAICompatibleAdapter } from './openai-compatible/adapter.js';
+import { getDatabase } from '../database/database.js';
 import {
   createOllamaAdapter,
   createLMStudioAdapter,
@@ -12,6 +14,11 @@ import {
   createOpenRouterAdapter,
   createModelScopeAdapter,
   createSenseNovaAdapter,
+  createLongCatAdapter,
+  createZhipuAdapter,
+  createMoonshotAdapter,
+  createDeepSeekAdapter,
+  createMiniMaxAdapter,
 } from './index.js';
 import type { ProviderAdapter, ProviderRegistry } from './contracts.js';
 
@@ -92,7 +99,66 @@ export function registerAllProviders(registry: ProviderRegistry, credentialStore
   const sensenovaKey = credentialStore.retrieve('sensenova-key');
   registry.register(createSenseNovaAdapter(sensenovaKey || undefined));
 
+  const longcatKey = credentialStore.retrieve('longcat-key');
+  registry.register(createLongCatAdapter(longcatKey || undefined));
+
+  const zhipuKey = credentialStore.retrieve('zhipu-key');
+  registry.register(createZhipuAdapter(zhipuKey || undefined));
+
+  const moonshotKey = credentialStore.retrieve('moonshot-key');
+  registry.register(createMoonshotAdapter(moonshotKey || undefined));
+
+  const deepseekKey = credentialStore.retrieve('deepseek-key');
+  registry.register(createDeepSeekAdapter(deepseekKey || undefined));
+
+  const minimaxKey = credentialStore.retrieve('minimax-key');
+  registry.register(createMiniMaxAdapter(minimaxKey || undefined));
+
+  registerCustomProvidersFromDb(registry, credentialStore);
+
   console.log(`[Providers] Registered ${registry.getAll().length} providers`);
+}
+
+export const CUSTOM_PROVIDER_PREFIX = 'custom-';
+
+export function makeCustomProviderId(name: string, existing: Set<string>): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const base = `${CUSTOM_PROVIDER_PREFIX}${slug || 'provider'}`;
+  if (!existing.has(base)) return base;
+  let n = 2;
+  while (existing.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+function registerCustomProvidersFromDb(
+  registry: ProviderRegistry,
+  credentialStore: ReadCredentialStore
+): void {
+  try {
+    const rows = getDatabase()
+      .prepare('SELECT id, display_name, base_url, is_enabled FROM providers WHERE is_built_in = 0')
+      .all() as Array<{ id: string; display_name: string; base_url: string; is_enabled: number }>;
+    for (const row of rows) {
+      if (registry.get(row.id)) continue;
+      const credential = credentialStore.retrieve(`${row.id}-key`);
+      const adapter = new OpenAICompatibleAdapter({
+        providerId: row.id,
+        providerName: row.display_name,
+        baseUrl: row.base_url,
+        authType: 'api-key',
+        isBuiltIn: false,
+        credentialId: credential ? `${row.id}-key` : undefined,
+        defaultHeaders: credential ? { Authorization: `Bearer ${credential}` } : {},
+      });
+      adapter.setEnabled(row.is_enabled === 1);
+      registry.register(adapter);
+    }
+  } catch (err) {
+    console.warn('[Bootstrap] Failed to load custom providers:', err);
+  }
 }
 
 export function applyPersistedProviderEnabledFromSettings(

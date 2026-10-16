@@ -35,6 +35,8 @@ export interface OpenAICompatibleConfig {
   requiredSettings?: string[];
   /** Recompute the effective baseUrl after a settings edit. Return null to keep the previous one. */
   resolveBaseUrl?: (settings: Record<string, unknown>) => string | null;
+  /** User-created providers report isBuiltIn=false so the UI can group/delete them. */
+  isBuiltIn?: boolean;
 }
 
 const BASE_URL_FIELD: ProviderConfigField = {
@@ -59,6 +61,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   private configFields: ProviderConfigField[];
   private requiredSettings: string[];
   private resolveBaseUrl?: (settings: Record<string, unknown>) => string | null;
+  private builtIn: boolean;
   private enabled = true;
 
   constructor(config: OpenAICompatibleConfig) {
@@ -72,6 +75,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     this.settings = { ...(config.settings || {}) };
     this.requiredSettings = config.requiredSettings || [];
     this.resolveBaseUrl = config.resolveBaseUrl;
+    this.builtIn = config.isBuiltIn !== false;
     this.baseUrl = this.computeBaseUrl(config.baseUrl);
     this.configFields = [
       BASE_URL_FIELD,
@@ -93,7 +97,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       baseUrl: this.baseUrl,
       apiVersion: this.apiVersion,
       isEnabled: this.enabled,
-      isBuiltIn: true,
+      isBuiltIn: this.builtIn,
       credentialStatus: this.authType === 'none' ? 'configured' : this.credentialId ? 'configured' : 'unconfigured',
       credentialId: this.credentialId,
       settings: { ...this.settings },

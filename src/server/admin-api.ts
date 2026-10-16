@@ -53,6 +53,15 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
     providerService.getProviderCredential(request.params.id)
   );
 
+  app.post<{ Body: { name?: string; baseUrl?: string; apiKey?: string } }>(
+    '/api/providers/custom',
+    async (request) => providerService.createCustomProvider(request.body ?? {})
+  );
+
+  app.delete<{ Params: { id: string } }>('/api/providers/:id', async (request) =>
+    providerService.deleteCustomProvider(scheduler, request.params.id)
+  );
+
   app.post<{ Params: { id: string }; Body: { enabled?: boolean } }>(
     '/api/providers/:id/toggle',
     async (request) => providerService.toggleProvider(scheduler, request.params.id, !!request.body?.enabled)

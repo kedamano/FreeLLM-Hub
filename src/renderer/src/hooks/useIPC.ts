@@ -64,6 +64,10 @@ function createHttpApi(): FreeLLMApi {
         ),
       getModels: (providerId: string) =>
         http<unknown[]>(`/providers/${seg(providerId)}/models`),
+      createCustom: (input: { name: string; baseUrl: string; apiKey?: string }) =>
+        postJson<{ success: boolean; providerId?: string; error?: string }>('/providers/custom', input),
+      deleteCustom: (providerId: string) =>
+        http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}`, { method: 'DELETE' }),
     },
     models: {
       list: () => http<unknown[]>('/models'),
