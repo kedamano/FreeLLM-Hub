@@ -1,6 +1,8 @@
-import { BrowserWindow, type BrowserWindowConstructorOptions } from 'electron';
+import { BrowserWindow, shell, type BrowserWindowConstructorOptions } from 'electron';
 import { resolve } from 'node:path';
 import { getAppConfig } from '../core/config/app-config.js';
+
+const DEV_SERVER_ORIGIN = 'http://localhost:5173';
 
 export class WindowManager {
   private mainWindow: BrowserWindow | null = null;
@@ -31,6 +33,7 @@ export class WindowManager {
     };
 
     this.mainWindow = new BrowserWindow(options);
+    this.applyNavigationGuards(this.mainWindow, isDev);
 
     this.mainWindow.once('ready-to-show', () => {
       this.mainWindow?.show();
@@ -44,12 +47,39 @@ export class WindowManager {
     });
 
     if (isDev) {
-      this.mainWindow.loadURL('http://localhost:5173');
+      this.mainWindow.loadURL(DEV_SERVER_ORIGIN);
     } else {
       this.mainWindow.loadFile(resolve(__dirname, '../renderer/index.html'));
     }
 
     return this.mainWindow;
+  }
+
+  private applyNavigationGuards(win: BrowserWindow, isDev: boolean): void {
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//i.test(url)) {
+        void shell.openExternal(url).catch(() => undefined);
+      }
+      return { action: 'deny' };
+    });
+
+    win.webContents.on('will-navigate', (event, url) => {
+      if (!this.isAllowedNavigation(url, isDev)) {
+        event.preventDefault();
+        console.warn(`[Window] Blocked navigation to ${url}`);
+      }
+    });
+  }
+
+  private isAllowedNavigation(url: string, isDev: boolean): boolean {
+    try {
+      const target = new URL(url);
+      if (isDev && target.origin === DEV_SERVER_ORIGIN) return true;
+      if (!isDev && target.protocol === 'file:') return true;
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   getMainWindow(): BrowserWindow | null {

@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { redactSecrets } from '../security/secret-redaction.js';
 
 export function registerCommonMiddleware(app: FastifyInstance): void {
   app.addHook('onRequest', async (request: FastifyRequest) => {
@@ -31,10 +32,11 @@ export function registerCommonMiddleware(app: FastifyInstance): void {
   });
 
   app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
-    reply.status(error.statusCode || 500).send({
+    const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
+    reply.status(status).send({
       error: {
-        message: error.message || 'Internal server error',
-        type: 'server_error',
+        message: redactSecrets(error.message) || 'Internal server error',
+        type: status === 500 ? 'server_error' : 'request_error',
       },
     });
   });

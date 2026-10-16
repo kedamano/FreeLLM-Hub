@@ -1,31 +1,15 @@
 import { getDashboardStats, getProviderStatistics, getDailyStats } from '../../usage/statistics.js';
 import { getRecentCalls } from '../../usage/usage-recorder.js';
-import type { IpcMainInvokeEvent } from 'electron';
+import { registerIpcHandler } from './handle.js';
 
 export function registerUsageIpc(): void {
-  const { ipcMain } = require('electron');
+  registerIpcHandler('usage:dashboard', async () => getDashboardStats());
 
-  ipcMain.handle('usage:dashboard', async () => {
-    return getDashboardStats();
-  });
+  registerIpcHandler('usage:provider-stats', async (_e, providerId: string) =>
+    getProviderStatistics(providerId as never)
+  );
 
-  ipcMain.handle('usage:provider-stats', async (_e: IpcMainInvokeEvent, providerId: string) => {
-    return getProviderStatistics(providerId as never);
-  });
+  registerIpcHandler('usage:daily-stats', async (_e, days?: number) => getDailyStats(days || 7));
 
-  ipcMain.handle('usage:daily-stats', async (_e: IpcMainInvokeEvent, days?: number) => {
-    return getDailyStats(days || 7);
-  });
-
-  ipcMain.handle('usage:recent-calls', async (_e: IpcMainInvokeEvent, limit?: number) => {
-    return getRecentCalls(limit || 100);
-  });
-
-  ipcMain.handle('gateway:status', async () => {
-    return { running: true, port: 0 };
-  });
-
-  ipcMain.handle('gateway:port', async () => {
-    return 0;
-  });
+  registerIpcHandler('usage:recent-calls', async (_e, limit?: number) => getRecentCalls(limit || 100));
 }

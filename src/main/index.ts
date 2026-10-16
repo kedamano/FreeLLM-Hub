@@ -5,9 +5,17 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.freellm-hub.app');
 }
 
+const isPrimaryInstance = app.requestSingleInstanceLock();
+
+if (!isPrimaryInstance) {
+  console.log('[App] Another instance already owns the single-instance lock');
+  app.quit();
+}
+
 const lifecycle = new AppLifecycle();
 
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) return;
   try {
     await lifecycle.initialize();
     await lifecycle.ready();
@@ -20,11 +28,21 @@ app.on('window-all-closed', () => {
   // Keep app running in tray on Windows
 });
 
-app.on('before-quit', async () => {
-  await lifecycle.quit();
+app.on('before-quit', (event) => {
+  if (!isPrimaryInstance || lifecycle.isShutdownComplete()) return;
+
+  event.preventDefault();
+  lifecycle
+    .shutdown()
+    .then(() => app.exit(0))
+    .catch((err) => {
+      console.error('[App] Shutdown failed:', err);
+      app.exit(1);
+    });
 });
 
 app.on('activate', () => {
+  if (!isPrimaryInstance) return;
   lifecycle.getWindowManager().showMainWindow();
 });
 

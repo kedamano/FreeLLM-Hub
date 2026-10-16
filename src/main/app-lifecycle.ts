@@ -1,10 +1,12 @@
-import { app, ipcMain } from 'electron';
+import { app } from 'electron';
 import { WindowManager } from './window-manager.js';
 import { TrayManager } from './tray-manager.js';
-import { GatewayServer, generateGatewayToken } from './gateway/server.js';
+import { GatewayServer, generateGatewayToken, safeTokenEquals } from './gateway/server.js';
 import { getDatabase, closeDatabase } from '../core/database/database.js';
 import { getCredentialStore } from './security/credential-store.js';
 import { registerAllIpcHandlers } from './ipc/index.js';
+import { registerIpcHandler } from './ipc/handle.js';
+import { deleteSetting, readSetting, writeSetting } from './ipc/settings.ipc.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { getProviderRegistry } from '../core/providers/index.js';
 import {
@@ -22,24 +24,29 @@ export interface GatewayConfig {
   host: string;
   port: number;
   authEnabled: boolean;
-  token: string;
 }
 
 const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
   host: '127.0.0.1',
   port: 0,
-  authEnabled: false,
-  token: '',
+  authEnabled: true,
 };
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
+const GATEWAY_CONFIG_KEY = 'gateway_config';
+const GATEWAY_TOKEN_KEY = 'gateway_token';
+const GATEWAY_CREDENTIAL_ID = 'gateway-token';
 
 export class AppLifecycle {
   private windowManager = new WindowManager();
   private trayManager = new TrayManager();
   private gatewayServer: GatewayServer | null = null;
   private scheduler: Scheduler;
-  private isQuitting = false;
+  private shutdownPromise: Promise<void> | null = null;
+  private shutdownComplete = false;
   private gatewayToken: string = '';
-  private gatewayConfig: GatewayConfig = DEFAULT_GATEWAY_CONFIG;
+  private gatewayStartError: string | null = null;
+  private gatewayConfig: GatewayConfig = { ...DEFAULT_GATEWAY_CONFIG };
 
   constructor() {
     this.scheduler = new Scheduler();
@@ -56,52 +63,56 @@ export class AppLifecycle {
     getDatabase();
     getCredentialStore();
 
-    // Load gateway config from settings
     this.loadGatewayConfig();
 
     this.registerProviders();
-    this.setupSingleInstance();
+    this.setupSecondInstance();
     registerAllIpcHandlers(this.scheduler, this.windowManager, this.gatewayServer);
 
-    // Register gateway IPC handlers
     this.registerGatewayIpc();
   }
 
   async ready(): Promise<void> {
     this.windowManager.createMainWindow();
 
-    try {
-      // Build auth validator if enabled and token exists
-      let authValidator: ((token: string) => boolean) | undefined;
-      if (this.gatewayConfig.authEnabled && this.gatewayToken) {
-        const validToken = this.gatewayToken;
-        authValidator = (token: string) => token === validToken;
-        console.log('[Gateway] Authentication enabled');
-      }
-
-      this.gatewayServer = new GatewayServer({
-        host: this.gatewayConfig.host,
-        port: this.gatewayConfig.port,
-        scheduler: this.scheduler,
-        authValidator,
-      });
-      const { port } = await this.gatewayServer.start();
-      console.log(`[Gateway] Listening on http://127.0.0.1:${port}`);
-
-      // Update config with actual port (in case port=0 was used)
-      if (this.gatewayConfig.port === 0) {
-        this.gatewayConfig.port = port;
-        this.saveGatewayConfig();
-      }
-    } catch (err) {
-      console.error('[Gateway] Failed to start:', err);
-    }
+    await this.startGateway();
 
     this.trayManager.createTray({
       onShow: () => this.windowManager.showMainWindow(),
       onHide: () => this.windowManager.hideMainWindow(),
-      onQuit: () => this.quit(),
+      onQuit: () => app.quit(),
     });
+  }
+
+  private async startGateway(): Promise<{ ok: boolean; error?: string }> {
+    try {
+      this.gatewayServer = new GatewayServer({
+        host: this.gatewayConfig.host,
+        port: this.gatewayConfig.port,
+        scheduler: this.scheduler,
+        authValidator: this.createAuthValidator(),
+      });
+      const { port } = await this.gatewayServer.start();
+      this.gatewayStartError = null;
+      console.log(`[Gateway] Listening on http://${this.gatewayConfig.host}:${port}`);
+
+      if (this.gatewayConfig.port === 0) {
+        this.gatewayConfig.port = port;
+        this.saveGatewayConfig();
+      }
+      return { ok: true };
+    } catch (err) {
+      this.gatewayServer = null;
+      this.gatewayStartError = err instanceof Error ? err.message : String(err);
+      console.error('[Gateway] Failed to start:', this.gatewayStartError);
+      return { ok: false, error: this.gatewayStartError };
+    }
+  }
+
+  private createAuthValidator(): ((token: string) => boolean) | undefined {
+    if (!this.gatewayConfig.authEnabled || !this.gatewayToken) return undefined;
+    const validToken = this.gatewayToken;
+    return (token: string) => safeTokenEquals(token, validToken);
   }
 
   private registerProviders(): void {
@@ -116,7 +127,9 @@ export class AppLifecycle {
       try {
         const parsed = JSON.parse(ollamaConfig);
         if (parsed.baseUrl) ollamaBaseUrl = parsed.baseUrl;
-      } catch {}
+      } catch {
+        console.warn('[Lifecycle] Invalid ollama config in credential store');
+      }
     }
 
     registry.register(createOllamaAdapter({ baseUrl: ollamaBaseUrl }));
@@ -141,13 +154,7 @@ export class AppLifecycle {
     console.log(`[Providers] Registered ${registry.getAll().length} providers`);
   }
 
-  private setupSingleInstance(): void {
-    const gotLock = app.requestSingleInstanceLock();
-    if (!gotLock) {
-      app.quit();
-      return;
-    }
-
+  private setupSecondInstance(): void {
     app.on('second-instance', () => {
       this.windowManager.showMainWindow();
     });
@@ -157,46 +164,68 @@ export class AppLifecycle {
 
   private loadGatewayConfig(): void {
     try {
-      const db = getDatabase();
-      const row = db.prepare("SELECT value FROM settings WHERE key = 'gateway_config'").get() as
-        | { value: string }
-        | undefined;
+      const row = readSetting(GATEWAY_CONFIG_KEY);
       if (row) {
-        this.gatewayConfig = JSON.parse(row.value);
+        const parsed = JSON.parse(row) as Partial<GatewayConfig>;
+        this.gatewayConfig = {
+          host: typeof parsed.host === 'string' && LOOPBACK_HOSTS.has(parsed.host) ? parsed.host : DEFAULT_GATEWAY_CONFIG.host,
+          port:
+            typeof parsed.port === 'number' && Number.isInteger(parsed.port) && parsed.port >= 0 && parsed.port <= 65535
+              ? parsed.port
+              : DEFAULT_GATEWAY_CONFIG.port,
+          authEnabled:
+            typeof parsed.authEnabled === 'boolean' ? parsed.authEnabled : DEFAULT_GATEWAY_CONFIG.authEnabled,
+        };
       }
     } catch {
       this.gatewayConfig = { ...DEFAULT_GATEWAY_CONFIG };
     }
 
-    // Load token (if not in config)
     if (!this.gatewayToken) {
-      try {
-        const db = getDatabase();
-        const row = db.prepare("SELECT value FROM settings WHERE key = 'gateway_token'").get() as
-          | { value: string }
-          | undefined;
-        if (row) this.gatewayToken = row.value;
-      } catch {}
+      this.gatewayToken = this.readStoredToken();
     }
 
-    // If auth is enabled but no token, generate one
     if (this.gatewayConfig.authEnabled && !this.gatewayToken) {
       this.gatewayToken = generateGatewayToken();
       this.saveGatewayConfig();
     }
   }
 
+  private readStoredToken(): string {
+    try {
+      const store = getCredentialStore();
+      const stored = store.retrieve(GATEWAY_CREDENTIAL_ID);
+      if (stored) return stored;
+
+      const db = getDatabase();
+      const legacy = db
+        .prepare('SELECT value FROM settings WHERE key = ?')
+        .get(GATEWAY_TOKEN_KEY) as { value: string } | undefined;
+      if (legacy?.value) {
+        const token = legacy.value;
+        try {
+          store.store(GATEWAY_CREDENTIAL_ID, token);
+        } catch {
+          console.error('[Gateway] Failed to migrate token to secure store');
+        }
+        deleteSetting(GATEWAY_TOKEN_KEY);
+        return token;
+      }
+    } catch (err) {
+      console.error('[Gateway] Unable to read token securely:', err);
+    }
+    return '';
+  }
+
   private saveGatewayConfig(): void {
     try {
-      const db = getDatabase();
-      const configToSave = { ...this.gatewayConfig, token: '' };
-      db.prepare(
-        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))"
-      ).run('gateway_config', JSON.stringify(configToSave));
+      writeSetting(GATEWAY_CONFIG_KEY, JSON.stringify(this.gatewayConfig));
       if (this.gatewayToken) {
-        db.prepare(
-          "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))"
-        ).run('gateway_token', this.gatewayToken);
+        try {
+          getCredentialStore().store(GATEWAY_CREDENTIAL_ID, this.gatewayToken);
+        } catch (err) {
+          console.error('[Gateway] Secure storage unavailable; token kept in memory only:', err);
+        }
       }
     } catch (err) {
       console.error('[Gateway] Failed to save config:', err);
@@ -204,111 +233,131 @@ export class AppLifecycle {
   }
 
   getGatewayConfig(): GatewayConfig {
-    return { ...this.gatewayConfig, token: this.gatewayToken };
+    return { ...this.gatewayConfig };
   }
 
   getGatewayUrl(): string {
     if (!this.gatewayServer) return '';
-    return `http://${this.gatewayConfig.host}:${this.gatewayServer.getPort()}`;
+    return this.gatewayServer.getUrl();
+  }
+
+  private gatewayStatus() {
+    const runtime = this.gatewayServer?.getStatus();
+    return {
+      running: !!runtime?.running,
+      host: this.gatewayConfig.host,
+      port: runtime?.running ? runtime.port : this.gatewayConfig.port,
+      url: runtime?.running ? runtime.url : '',
+      authEnabled: this.gatewayConfig.authEnabled,
+      hasToken: !!this.gatewayToken,
+      lastError: runtime?.lastError ?? this.gatewayStartError,
+    };
   }
 
   // ─── IPC for Gateway ───────────────────────────────────────────────
 
   private registerGatewayIpc(): void {
-    ipcMain.handle('gateway:getStatus', () => {
-      const port = this.gatewayServer?.getPort() || this.gatewayConfig.port;
-      const host = this.gatewayConfig.host;
-      return {
-        running: !!this.gatewayServer,
-        host,
-        port,
-        url: this.gatewayServer ? `http://${host}:${port}` : '',
-        authEnabled: this.gatewayConfig.authEnabled,
-        hasToken: !!this.gatewayToken,
-      };
-    });
+    registerIpcHandler('gateway:getStatus', async () => this.gatewayStatus());
 
-    ipcMain.handle('gateway:getToken', () => {
-      return this.gatewayToken;
-    });
+    registerIpcHandler('gateway:getToken', async () => this.gatewayToken);
 
-    ipcMain.handle('gateway:generateToken', () => {
+    registerIpcHandler('gateway:generateToken', async () => {
       this.gatewayToken = generateGatewayToken();
       this.saveGatewayConfig();
+      if (this.gatewayServer) {
+        const restartError = await this.restartGateway();
+        if (restartError) console.error('[Gateway] Restart after token rotation failed:', restartError);
+      }
       return this.gatewayToken;
     });
 
-    ipcMain.handle('gateway:updateConfig', (_e, config: Partial<GatewayConfig>) => {
-      const oldHost = this.gatewayConfig.host;
-      const oldPort = this.gatewayConfig.port;
-      const oldAuth = this.gatewayConfig.authEnabled;
+    registerIpcHandler('gateway:updateConfig', async (_e, config: Partial<GatewayConfig>) => {
+      const previous = { ...this.gatewayConfig };
 
-      if (config.host !== undefined) this.gatewayConfig.host = config.host;
-      if (config.port !== undefined) this.gatewayConfig.port = config.port;
-      if (config.authEnabled !== undefined) this.gatewayConfig.authEnabled = config.authEnabled;
+      if (config.host !== undefined) {
+        if (typeof config.host !== 'string' || !LOOPBACK_HOSTS.has(config.host)) {
+          return {
+            success: false,
+            error: `Gateway host must be one of: ${[...LOOPBACK_HOSTS].join(', ')}`,
+            config: this.getGatewayConfig(),
+          };
+        }
+        this.gatewayConfig.host = config.host;
+      }
 
-      // Generate token if enabling auth without one
+      if (config.port !== undefined) {
+        const port = Number(config.port);
+        if (!Number.isInteger(port) || port < 0 || port > 65535) {
+          return {
+            success: false,
+            error: 'Port must be an integer between 0 and 65535',
+            config: this.getGatewayConfig(),
+          };
+        }
+        this.gatewayConfig.port = port;
+      }
+
+      if (config.authEnabled !== undefined) {
+        this.gatewayConfig.authEnabled = !!config.authEnabled;
+      }
+
       if (this.gatewayConfig.authEnabled && !this.gatewayToken) {
         this.gatewayToken = generateGatewayToken();
       }
 
       this.saveGatewayConfig();
 
-      // Restart gateway if host/port/auth changed
-      if (
-        this.gatewayServer &&
-        (oldHost !== this.gatewayConfig.host ||
-          oldPort !== this.gatewayConfig.port ||
-          oldAuth !== this.gatewayConfig.authEnabled)
-      ) {
-        this.restartGateway();
+      const needsRestart =
+        previous.host !== this.gatewayConfig.host ||
+        previous.port !== this.gatewayConfig.port ||
+        previous.authEnabled !== this.gatewayConfig.authEnabled ||
+        !this.gatewayServer;
+
+      const restartError = needsRestart ? await this.restartGateway() : null;
+
+      return {
+        success: !restartError,
+        error: restartError ?? undefined,
+        config: this.getGatewayConfig(),
+        status: this.gatewayStatus(),
+      };
+    });
+  }
+
+  private async restartGateway(): Promise<string | null> {
+    if (this.gatewayServer) {
+      await this.gatewayServer.stop().catch(() => undefined);
+      this.gatewayServer = null;
+    }
+
+    const result = await this.startGateway();
+    return result.ok ? null : (result.error ?? 'Gateway restart failed');
+  }
+
+  isShutdownComplete(): boolean {
+    return this.shutdownComplete;
+  }
+
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+
+    this.shutdownPromise = (async () => {
+      console.log('[App] Shutting down...');
+
+      if (this.gatewayServer) {
+        await this.gatewayServer.stop().catch((err) => console.error('[Gateway] Failed to stop:', err));
+        this.gatewayServer = null;
       }
 
-      return { success: true, config: this.getGatewayConfig() };
-    });
-  }
+      this.trayManager.destroy();
+      this.windowManager.destroyMainWindow();
+      closeDatabase();
 
-  private async restartGateway(): Promise<void> {
-    if (this.gatewayServer) {
-      await this.gatewayServer.stop();
-    }
+      this.shutdownComplete = true;
+      console.log('[App] Shutdown complete');
+    })();
 
-    let authValidator: ((token: string) => boolean) | undefined;
-    if (this.gatewayConfig.authEnabled && this.gatewayToken) {
-      const validToken = this.gatewayToken;
-      authValidator = (token: string) => token === validToken;
-    }
-
-    this.gatewayServer = new GatewayServer({
-      host: this.gatewayConfig.host,
-      port: this.gatewayConfig.port,
-      scheduler: this.scheduler,
-      authValidator,
-    });
-
-    const { port } = await this.gatewayServer.start();
-    if (this.gatewayConfig.port === 0) {
-      this.gatewayConfig.port = port;
-      this.saveGatewayConfig();
-    }
-    console.log(`[Gateway] Restarted on ${this.gatewayConfig.host}:${port}`);
-  }
-
-  async quit(): Promise<void> {
-    if (this.isQuitting) return;
-    this.isQuitting = true;
-
-    console.log('[App] Shutting down...');
-
-    if (this.gatewayServer) {
-      await this.gatewayServer.stop();
-    }
-
-    this.trayManager.destroy();
-    this.windowManager.destroyMainWindow();
-    closeDatabase();
-
-    app.quit();
+    return this.shutdownPromise;
   }
 
   getWindowManager(): WindowManager {

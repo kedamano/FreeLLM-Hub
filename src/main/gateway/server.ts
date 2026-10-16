@@ -1,18 +1,22 @@
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { resolve as resolvePath } from 'node:path';
 import { Scheduler } from '../../scheduler/scheduler.js';
 import { recordCall } from '../../usage/usage-recorder.js';
 import { getProviderRegistry } from '../../core/providers/registry.js';
 import type {
   GatewayRequest,
-  GatewayResponse,
   ProviderId,
 } from '../../shared/types/index.js';
 import { generateRequestId } from '../../shared/utils/index.js';
-import type { ChatOptions } from '../../core/providers/contracts.js';
 import { AllProvidersFailedError, RateLimitError, AuthenticationError } from '../../shared/errors/index.js';
 import { redactSecrets } from '../security/secret-redaction.js';
+import { getAppConfig } from '../../core/config/app-config.js';
 import { registerCommonMiddleware } from './middleware.js';
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
+const LOCAL_ORIGIN = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i;
 
 export interface GatewayServerOptions {
   host?: string;
@@ -21,51 +25,70 @@ export interface GatewayServerOptions {
   authValidator?: (token: string) => boolean;
 }
 
+export interface GatewayStatus {
+  running: boolean;
+  host: string;
+  port: number;
+  url: string;
+  lastError: string | null;
+}
+
 export class GatewayServer {
   private app: FastifyInstance | null = null;
   private scheduler: Scheduler;
   private host: string;
   private port: number;
+  private configuredPort: number;
   private authValidator?: (token: string) => boolean;
+  private lastError: string | null = null;
 
   constructor(options: GatewayServerOptions) {
     this.scheduler = options.scheduler;
     this.host = options.host || '127.0.0.1';
-    this.port = options.port || 0;
+    this.port = options.port ?? 0;
+    this.configuredPort = this.port;
     this.authValidator = options.authValidator;
   }
 
   async start(): Promise<{ host: string; port: number }> {
+    if (!LOOPBACK_HOSTS.has(this.host)) {
+      this.lastError = `Gateway host must be loopback (127.0.0.1 or localhost), got: ${this.host}`;
+      throw new Error(this.lastError);
+    }
+
     this.app = Fastify({
       logger: {
         level: 'info',
         transport: {
           target: 'pino-pretty',
-          options: { colorize: false, destination: 'logs/gateway.log' },
+          options: { colorize: false, destination: resolveGatewayLogFile() },
         },
       },
       bodyLimit: 10 * 1024 * 1024,
     });
 
-    await this.app.register(cors, { origin: true });
+    await this.app.register(cors, {
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (LOCAL_ORIGIN.test(origin)) return callback(null, true);
+        callback(null, false);
+      },
+    });
 
-    // Register auth middleware if validator is provided
     if (this.authValidator) {
       this.app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
-        // Skip auth for health check
         if (request.url === '/health' || request.url?.startsWith('/health')) return;
 
         const authHeader = request.headers.authorization;
         if (!authHeader) {
-          reply.status(401).send({
+          return reply.status(401).send({
             error: { message: 'Missing authorization header. Use: Bearer <token>', type: 'auth_required' },
           });
-          return;
         }
 
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
         if (!this.authValidator!(token)) {
-          reply.status(403).send({
+          return reply.status(403).send({
             error: { message: 'Invalid token', type: 'auth_failed' },
           });
         }
@@ -75,8 +98,17 @@ export class GatewayServer {
     this.registerRoutes();
     registerCommonMiddleware(this.app);
 
-    await this.app.listen({ host: this.host, port: this.port });
+    try {
+      await this.app.listen({ host: this.host, port: this.port });
+    } catch (err) {
+      this.lastError = redactSecrets(err instanceof Error ? err.message : String(err));
+      const app = this.app;
+      this.app = null;
+      await app?.close().catch(() => undefined);
+      throw err;
+    }
 
+    this.lastError = null;
     const address = this.app.server.address();
     if (address && typeof address !== 'string') {
       this.port = address.port;
@@ -102,6 +134,25 @@ export class GatewayServer {
 
   getUrl(): string {
     return `http://${this.host}:${this.port}`;
+  }
+
+  getLastError(): string | null {
+    return this.lastError;
+  }
+
+  isRunning(): boolean {
+    return this.app !== null;
+  }
+
+  getStatus(): GatewayStatus {
+    const running = this.isRunning();
+    return {
+      running,
+      host: this.host,
+      port: running ? this.port : this.configuredPort,
+      url: running ? this.getUrl() : '',
+      lastError: this.lastError,
+    };
   }
 
   private registerRoutes(): void {
@@ -166,7 +217,7 @@ export class GatewayServer {
           results.push({
             providerId: adapter.providerId,
             modelsFound: 0,
-            error: err instanceof Error ? err.message : String(err),
+            error: redactSecrets(err instanceof Error ? err.message : String(err)),
           });
         }
       }
@@ -271,13 +322,13 @@ export class GatewayServer {
         durationMs: Date.now() - startTime,
         promptTokens: 0,
         completionTokens: 0,
-        errorMessage: err instanceof Error ? err.message : String(err),
+        errorMessage: redactSecrets(err instanceof Error ? err.message : String(err)),
       });
 
       const statusCode = getErrorStatusCode(err);
       return reply.status(statusCode).send({
         error: {
-          message: getSafeErrorMessage(err),
+          message: redactSecrets(getSafeErrorMessage(err)),
           type: getErrorType(err),
           code: getErrorCode(err),
         },
@@ -288,24 +339,54 @@ export class GatewayServer {
   private handleStreamRequest(
     reply: import('fastify').FastifyReply,
     request: GatewayRequest,
-    _startTime: number
+    startTime: number
   ) {
-    reply.raw.writeHead(200, {
+    reply.hijack();
+    const raw = reply.raw;
+
+    raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
 
     const stream = this.scheduler.executeStream(request);
+    let clientGone = false;
+    let closed = false;
+
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      void Promise.resolve(stream.return(undefined as never)).catch(() => undefined);
+    };
+
+    raw.on('close', () => {
+      clientGone = true;
+      closeStream();
+    });
+    raw.on('error', () => {
+      clientGone = true;
+      closeStream();
+    });
+
+    const write = (data: string): Promise<void> =>
+      new Promise<void>((resolveWrite) => {
+        if (clientGone || raw.writableEnded) return resolveWrite();
+        if (raw.write(data)) resolveWrite();
+        else raw.once('drain', () => resolveWrite());
+      });
 
     (async () => {
-      let fullContent = '';
+      let providerId: ProviderId = 'unknown';
+      let modelId = 'unknown';
       let finishReason = 'stop';
       let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
       try {
         for await (const chunk of stream) {
-          if (chunk.content) fullContent += chunk.content;
+          if (clientGone) break;
+          providerId = chunk.providerId ?? providerId;
+          modelId = chunk.model ?? modelId;
           if (chunk.finishReason) finishReason = chunk.finishReason;
           if (chunk.usage) usage = chunk.usage;
 
@@ -324,37 +405,74 @@ export class GatewayServer {
             ],
           });
 
-          reply.raw.write(`data: ${sseData}\n\n`);
+          await write(`data: ${sseData}\n\n`);
         }
 
-        const finalChunk = JSON.stringify({
-          id: request.requestId,
-          object: 'chat.completion.chunk',
-          choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-          usage: {
-            prompt_tokens: usage.promptTokens,
-            completion_tokens: usage.completionTokens,
-            total_tokens: usage.totalTokens,
-          },
+        if (!clientGone) {
+          const finalChunk = JSON.stringify({
+            id: request.requestId,
+            object: 'chat.completion.chunk',
+            choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+            usage: {
+              prompt_tokens: usage.promptTokens,
+              completion_tokens: usage.completionTokens,
+              total_tokens: usage.totalTokens,
+            },
+          });
+
+          await write(`data: ${finalChunk}\n\n`);
+          await write('data: [DONE]\n\n');
+        }
+
+        recordCall({
+          requestId: request.requestId,
+          providerId,
+          modelId,
+          taskType: request.taskType,
+          status: clientGone ? 'error' : 'success',
+          durationMs: Date.now() - startTime,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          errorMessage: clientGone ? 'Client disconnected before completion' : undefined,
+        });
+      } catch (err) {
+        recordCall({
+          requestId: request.requestId,
+          providerId,
+          modelId,
+          taskType: request.taskType,
+          status: 'error',
+          durationMs: Date.now() - startTime,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          errorMessage: redactSecrets(getSafeErrorMessage(err)),
         });
 
-        reply.raw.write(`data: ${finalChunk}\n\n`);
-        reply.raw.write('data: [DONE]\n\n');
-      } catch (err) {
-        const errorData = JSON.stringify({
-          error: {
-            message: redactSecrets(getSafeErrorMessage(err)),
-            type: getErrorType(err),
-            code: getErrorCode(err),
-          },
-        });
-        reply.raw.write(`data: ${errorData}\n\n`);
+        if (!clientGone) {
+          const errorData = JSON.stringify({
+            error: {
+              message: redactSecrets(getSafeErrorMessage(err)),
+              type: getErrorType(err),
+              code: getErrorCode(err),
+            },
+          });
+          await write(`data: ${errorData}\n\n`);
+        }
       } finally {
-        reply.raw.end();
+        closeStream();
+        if (!raw.writableEnded) raw.end();
       }
     })();
 
     return reply;
+  }
+}
+
+function resolveGatewayLogFile(): string {
+  try {
+    return resolvePath(getAppConfig().logDir, 'gateway.log');
+  } catch {
+    return resolvePath('logs', 'gateway.log');
   }
 }
 
@@ -397,10 +515,12 @@ function getErrorCode(err: unknown): string {
 
 /** Generate a secure gateway access token */
 export function generateGatewayToken(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = 'fh_';
-  for (let i = 0; i < 32; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+  return `fh_${randomBytes(24).toString('base64url')}`;
+}
+
+/** Constant-time token comparison */
+export function safeTokenEquals(candidate: string, expected: string): boolean {
+  if (typeof candidate !== 'string' || typeof expected !== 'string') return false;
+  if (candidate.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(candidate, 'utf8'), Buffer.from(expected, 'utf8'));
 }

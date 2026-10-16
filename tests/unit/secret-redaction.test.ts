@@ -7,20 +7,28 @@ describe('secret-redaction', () => {
       expect(redactSecrets('')).toBe('');
     });
 
-    it('should redact Bearer token', () => {
+    it('should keep only a short prefix of a Bearer token', () => {
       const result = redactSecrets('Authorization: Bearer abc123xyz789secret');
+      expect(result).toBe('Authorization: Bearer abc1****');
       expect(result).not.toContain('abc123xyz789secret');
-      expect(result).toContain('****');
+      expect(result).not.toContain('xyz789secret');
     });
 
-    it('should redact api_key patterns', () => {
+    it('should keep the label and mask api_key values', () => {
       const result = redactSecrets('api_key: sk-abc123def456ghi789');
-      expect(result).toContain('****');
+      expect(result).toBe('api_key: sk-a****');
+      expect(result).not.toContain('abc123def456ghi789');
     });
 
-    it('should redact token patterns', () => {
+    it('should mask token values', () => {
       const result = redactSecrets('token=supersecrettoken12345');
-      expect(result).toContain('****');
+      expect(result).toBe('token=supe****');
+      expect(result).not.toContain('supersecrettoken12345');
+    });
+
+    it('should mask a bare sk- key without leaking the tail', () => {
+      const result = redactSecrets('key is sk-abcdefghijklmnopqrstuvwxyz');
+      expect(result).toBe('key is sk-a****');
     });
 
     it('should not modify clean text', () => {
@@ -33,7 +41,7 @@ describe('secret-redaction', () => {
       const result = redactSecrets(input);
       expect(result).not.toContain('mytoken123');
       expect(result).not.toContain('anothertoken456');
-      expect(result).toContain('****');
+      expect(result).toBe('Authorization: Bearer myto**** blah Authorization: Bearer anot****');
     });
 
     it('should handle null/undefined input', () => {

@@ -3,18 +3,19 @@ import type { IpcMainInvokeEvent } from 'electron';
 const ALLOWED_CHANNELS = new Set<string>([
   'providers:list',
   'providers:get',
-  'providers:add',
-  'providers:remove',
   'providers:test',
   'providers:set-credential',
   'providers:remove-credential',
   'providers:toggle',
+  'providers:update-baseurl',
+  'providers:discover-models',
   'models:list',
-  'models:refresh',
   'models:get',
   'models:discover',
+  'models:refresh',
   'scheduler:status',
   'scheduler:reset-circuit',
+  'scheduler:reset-all-circuits',
   'settings:get',
   'settings:set',
   'settings:get-all',
@@ -22,18 +23,21 @@ const ALLOWED_CHANNELS = new Set<string>([
   'usage:provider-stats',
   'usage:daily-stats',
   'usage:recent-calls',
-  'gateway:status',
-  'gateway:start',
-  'gateway:stop',
-  'gateway:port',
+  'gateway:getStatus',
+  'gateway:getToken',
+  'gateway:generateToken',
+  'gateway:updateConfig',
   'app:version',
   'app:data-path',
 ]);
 
-type IpcHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>;
+export type IpcHandler = (event: IpcMainInvokeEvent, ...args: any[]) => Promise<unknown>;
 
-export function createIpcGuard(handler: IpcHandler): IpcHandler {
+export function createIpcGuard(channel: string, handler: IpcHandler): IpcHandler {
   return async (event, ...args) => {
+    if (!isAllowedChannel(channel)) {
+      throw new Error(`IPC channel not allowed: ${channel}`);
+    }
     if (!event.sender || event.sender.isDestroyed()) {
       throw new Error('Invalid IPC sender');
     }

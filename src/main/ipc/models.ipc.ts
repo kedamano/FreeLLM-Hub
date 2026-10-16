@@ -1,40 +1,41 @@
 import { getProviderRegistry } from '../../core/providers/index.js';
-import type { IpcMainInvokeEvent } from 'electron';
+import { redactSecrets } from '../security/secret-redaction.js';
+import { registerIpcHandler } from './handle.js';
 
 export function registerModelsIpc(): void {
-  const { ipcMain } = require('electron');
   const registry = getProviderRegistry();
 
-  ipcMain.handle('models:list', async () => {
+  const collectModels = async () => {
     const models: Array<Record<string, unknown>> = [];
     for (const adapter of registry.getAll()) {
       if (!adapter.getProviderConfig().isEnabled) continue;
       try {
-        const providerModels = await adapter.listModels();
-        for (const m of providerModels) {
+        for (const providerModel of await adapter.listModels()) {
           models.push({
-            id: m.id,
-            providerId: m.providerId,
-            displayName: m.displayName,
-            capabilities: m.capabilities,
-            pricing: m.pricing,
-            status: m.status,
+            id: providerModel.id,
+            providerId: providerModel.providerId,
+            displayName: providerModel.displayName,
+            capabilities: providerModel.capabilities,
+            pricing: providerModel.pricing,
+            status: providerModel.status,
           });
         }
       } catch {
-        // skip failed providers
+        // skip unreachable providers
       }
     }
     return models;
-  });
+  };
 
-  ipcMain.handle('models:get', async (_e: IpcMainInvokeEvent, providerId: string, modelId: string) => {
+  registerIpcHandler('models:list', async () => collectModels());
+
+  registerIpcHandler('models:get', async (_e, providerId: string, modelId: string) => {
     const adapter = registry.get(providerId);
     if (!adapter) return null;
     return adapter.getModel(modelId);
   });
 
-  ipcMain.handle('models:discover', async () => {
+  registerIpcHandler('models:discover', async () => {
     const results: Array<Record<string, unknown>> = [];
     for (const adapter of registry.getAll()) {
       if (!adapter.getProviderConfig().isEnabled) continue;
@@ -45,10 +46,12 @@ export function registerModelsIpc(): void {
         results.push({
           providerId: adapter.providerId,
           success: false,
-          error: err instanceof Error ? err.message : 'Unknown error',
+          error: redactSecrets(err instanceof Error ? err.message : 'Unknown error'),
         });
       }
     }
     return results;
   });
+
+  registerIpcHandler('models:refresh', async () => collectModels());
 }

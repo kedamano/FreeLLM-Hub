@@ -1,24 +1,26 @@
-const SECRET_PATTERNS = [
-  /Bearer\s+[A-Za-z0-9\-._~+/]+/g,
-  /api[_-]?key["\s:=]+[A-Za-z0-9\-._~+/]{8,}/gi,
-  /token["\s:=]+[A-Za-z0-9\-._~+/]{8,}/gi,
-  /sk-[A-Za-z0-9]{20,}/g,
-  /["']?(?:password|secret|api_?key|token)["']?\s*[:=]\s*["']?([A-Za-z0-9\-._~+/]{8,})["']?/gi,
-  /Authorization:\s*Bearer\s+\S+/gi,
+const SECRET_PATTERNS: RegExp[] = [
+  /Bearer\s+([A-Za-z0-9\-._~+/]{4,})/gi,
+  /(?:api[_-]?key|secret|token|password|credential)["'\s:=]{1,4}([A-Za-z0-9\-._~+/]{4,})/gi,
+  /(sk-[A-Za-z0-9]{16,})/g,
 ];
+
+const PREFIX_LENGTH = 4;
+
+function maskSecret(match: string, secret: string | undefined): string {
+  const value = typeof secret === 'string' && secret.length > 0 ? secret : match;
+  const head = secret === undefined ? '' : match.slice(0, match.length - value.length);
+  return `${head}${value.slice(0, PREFIX_LENGTH)}****`;
+}
 
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let result = text;
 
   for (const pattern of SECRET_PATTERNS) {
-    result = result.replace(pattern, (match) => {
-      if (match.includes(':') || match.includes('=') || match.includes('Bearer')) {
-        const prefix = match.slice(0, Math.max(0, match.length - 8));
-        return `${prefix}****`;
-      }
-      return '****';
-    });
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, (match: string, group?: string) =>
+      maskSecret(match, typeof group === 'string' ? group : undefined)
+    );
   }
 
   return result;

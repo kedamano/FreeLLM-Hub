@@ -1,5 +1,24 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { isAllowedChannel, sanitizeIpcInput } from '../../src/main/security/ipc-guard';
+
+const { registeredChannels, handlerRegistry, ipcMainMock } = vi.hoisted(() => {
+  const registeredChannels: string[] = [];
+  const handlerRegistry = new Map<string, (event: any, ...args: any[]) => Promise<unknown>>();
+  return {
+    registeredChannels,
+    handlerRegistry,
+    ipcMainMock: {
+      handle: (channel: string, handler: (event: any, ...args: any[]) => Promise<unknown>) => {
+        registeredChannels.push(channel);
+        handlerRegistry.set(channel, handler);
+      },
+    },
+  };
+});
+
+vi.mock('electron', () => ({ ipcMain: ipcMainMock }));
+
+import { registerIpcHandler } from '../../src/main/ipc/handle';
 
 describe('ipc-guard', () => {
   describe('isAllowedChannel', () => {
@@ -10,6 +29,8 @@ describe('ipc-guard', () => {
       expect(isAllowedChannel('providers:set-credential')).toBe(true);
       expect(isAllowedChannel('providers:remove-credential')).toBe(true);
       expect(isAllowedChannel('providers:toggle')).toBe(true);
+      expect(isAllowedChannel('providers:update-baseurl')).toBe(true);
+      expect(isAllowedChannel('providers:discover-models')).toBe(true);
     });
 
     it('should allow known model channels', () => {
@@ -22,13 +43,23 @@ describe('ipc-guard', () => {
     it('should allow scheduler channels', () => {
       expect(isAllowedChannel('scheduler:status')).toBe(true);
       expect(isAllowedChannel('scheduler:reset-circuit')).toBe(true);
+      expect(isAllowedChannel('scheduler:reset-all-circuits')).toBe(true);
     });
 
-    it('should allow settings and usage channels', () => {
+    it('should allow settings, usage, gateway and app channels', () => {
       expect(isAllowedChannel('settings:get')).toBe(true);
       expect(isAllowedChannel('settings:set')).toBe(true);
+      expect(isAllowedChannel('settings:get-all')).toBe(true);
       expect(isAllowedChannel('usage:dashboard')).toBe(true);
-      expect(isAllowedChannel('gateway:port')).toBe(true);
+      expect(isAllowedChannel('usage:provider-stats')).toBe(true);
+      expect(isAllowedChannel('usage:daily-stats')).toBe(true);
+      expect(isAllowedChannel('usage:recent-calls')).toBe(true);
+      expect(isAllowedChannel('gateway:getStatus')).toBe(true);
+      expect(isAllowedChannel('gateway:getToken')).toBe(true);
+      expect(isAllowedChannel('gateway:generateToken')).toBe(true);
+      expect(isAllowedChannel('gateway:updateConfig')).toBe(true);
+      expect(isAllowedChannel('app:version')).toBe(true);
+      expect(isAllowedChannel('app:data-path')).toBe(true);
     });
 
     it('should reject unknown channels', () => {
@@ -82,6 +113,63 @@ describe('ipc-guard', () => {
       const result = sanitizeIpcInput(input) as { data: { key: string } };
       expect(result.name).toBe('test');
       expect(result.data.key.length).toBe(10000);
+    });
+  });
+
+  describe('registerIpcHandler', () => {
+    const validEvent = { sender: { isDestroyed: () => false } } as never;
+
+    const getHandler = (channel: string) => {
+      const handler = handlerRegistry.get(channel);
+      if (!handler) throw new Error(`Handler not registered for ${channel}`);
+      return handler;
+    };
+
+    it('registers allowlisted channels only', () => {
+      registerIpcHandler('usage:dashboard', async () => ({ totalRequests: 0 }));
+      registerIpcHandler('system:exec', async () => 'nope');
+
+      expect(registeredChannels).toContain('usage:dashboard');
+      expect(registeredChannels).not.toContain('system:exec');
+    });
+
+    it('returns the handler payload on success', async () => {
+      registerIpcHandler('app:version', async () => '1.2.3');
+      await expect(getHandler('app:version')(validEvent)).resolves.toBe('1.2.3');
+    });
+
+    it('rejects handlers for destroyed senders', async () => {
+      registerIpcHandler('models:list', async () => []);
+      const destroyed = { sender: { isDestroyed: () => true } } as never;
+      await expect(getHandler('models:list')(destroyed)).resolves.toEqual({
+        success: false,
+        error: 'Invalid IPC sender',
+      });
+    });
+
+    it('returns a consistent error envelope and redacts secrets', async () => {
+      registerIpcHandler('scheduler:status', async () => {
+        throw new Error('auth failed with Bearer sk-abcdefghijklmnopqrstuvwxyz');
+      });
+      const result = (await getHandler('scheduler:status')(validEvent)) as {
+        success: boolean;
+        error: string;
+      };
+      expect(result.success).toBe(false);
+      expect(result.error).not.toContain('bcdefghijklmnopqrstuvwxyz');
+      expect(result.error).toContain('****');
+    });
+
+    it('sanitizes oversized string arguments', async () => {
+      registerIpcHandler('settings:set', async (_e, key: string, value: string) => ({
+        key,
+        length: value.length,
+      }));
+      const result = (await getHandler('settings:set')(validEvent, 'theme', 'x'.repeat(20000))) as {
+        key: string;
+        length: number;
+      };
+      expect(result.length).toBe(10000);
     });
   });
 });
