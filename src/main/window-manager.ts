@@ -20,7 +20,9 @@ export class WindowManager {
       minWidth: 960,
       minHeight: 600,
       title: 'FreeLLM Hub',
-      icon: resolve(__dirname, '../../resources/icons/icon.ico'),
+      // PNG, not ICO: Linux ignores .ico entirely and macOS wants an icns/png, so the
+      // .ico path left the taskbar/dock icon blank outside Windows.
+      icon: resolve(__dirname, '../../resources/icons/icon.png'),
       backgroundColor: '#f8fafc',
       webPreferences: {
         preload: resolve(__dirname, '../preload/index.js'),

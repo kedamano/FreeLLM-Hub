@@ -2,7 +2,9 @@ import { app } from 'electron';
 import { AppLifecycle } from './app-lifecycle.js';
 
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.freellm-hub.app');
+  // Must match `appId` in electron-builder.yml, otherwise Windows notifications and the
+  // taskbar jump list are attributed to a different application identity.
+  app.setAppUserModelId('com.freellmhub.app');
 }
 
 const isPrimaryInstance = app.requestSingleInstanceLock();

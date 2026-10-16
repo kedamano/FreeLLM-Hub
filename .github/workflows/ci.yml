@@ -5,9 +5,23 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Force packaging even on a pull request'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
 
 jobs:
   test:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -27,22 +41,114 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Type check
+      # No native rebuild step here: `npm ci` leaves better-sqlite3 on its Node prebuild,
+      # which is what vitest needs. `npm run rebuild:electron` is only for `npm run dev`.
+
+      - name: Typecheck
         run: npm run typecheck
 
-      - name: Run tests
+      - name: Test
         run: npm test
 
       - name: Build (renderer + main)
         run: npm run build
 
   lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
       - run: npm ci
       - run: npm run lint
+
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium firefox
+      - run: npm run test:e2e
+
+  # Packaging must run on the target OS: electron-builder cannot produce a macOS .app
+  # from Linux/Windows, and Windows icon/signing edits need a Windows host.
+  package:
+    name: Package (${{ matrix.label }})
+    if: github.event_name == 'push' || github.event.inputs.package == 'true' || github.event_name == 'workflow_dispatch'
+    needs: [test, lint]
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x64
+            runs-on: windows-latest
+            package-args: --win --x64
+            artifact-pattern: |
+              release/*.exe
+          - label: linux-x64
+            runs-on: ubuntu-latest
+            package-args: --linux --x64
+            artifact-pattern: |
+              release/*.AppImage
+              release/*.deb
+              release/*.tar.gz
+          - label: linux-arm64
+            runs-on: ubuntu-latest
+            package-args: --linux --arm64
+            artifact-pattern: |
+              release/*arm64*.AppImage
+              release/*.tar.gz
+          - label: macos-universal
+            runs-on: macos-latest
+            package-args: --mac --x64 --arm64
+            artifact-pattern: |
+              release/*.dmg
+              release/*.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package ${{ matrix.label }}
+        run: node scripts/package.mjs ${{ matrix.package-args }}
+        env:
+          # Unsigned builds: electron-builder skips the certificate lookup instead of
+          # failing when APPLE_ID / CSC_LINK are absent.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          WIN_CSC_LINK: ''
+          WIN_CSC_KEY_PASSWORD: ''
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: freellm-hub-${{ matrix.label }}
+          path: ${{ matrix.artifact-pattern }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Build artefacts (${{ matrix.label }})"
+            echo ""
+            echo '```'
+            ls -la release 2>/dev/null || echo "release/ 未生成"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

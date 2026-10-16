@@ -1,26 +1,13 @@
+// Kept as an alias so older docs/CI invocations still work; the real logic lives in
+// scripts/package.mjs, which handles win/mac/linux uniformly.
 import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = resolve(__dirname, '..');
-
-function run(command, args) {
-  console.log('[package] ' + command + ' ' + args.join(' '));
-  const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', shell: true });
-  if (result.status !== 0) {
-    process.exit(result.status || 1);
-  }
-}
-
-async function main() {
-  console.log('[package] Packaging FreeLLM Hub for Windows...');
-  run('node', ['scripts/build.mjs']);
-  run('npx', ['electron-builder', '--win', '--x64']);
-  console.log('[package] Packaging complete! Check the release/ directory.');
-}
-
-main().catch((err) => {
-  console.error('[package] Error:', err);
-  process.exit(1);
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const result = spawnSync('node', [resolve(root, 'scripts/package.mjs'), '--win', '--x64'], {
+  cwd: root,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
 });
+process.exit(result.status ?? 1);

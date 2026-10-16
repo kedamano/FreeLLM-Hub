@@ -121,6 +121,43 @@ function encodeIco(entries) {
   return Buffer.concat([header, ...entryBlocks, ...blocks]);
 }
 
+/**
+ * Apple icon family. Every entry is a whole PNG payload (allowed since OS X 10.7), so no
+ * `iconutil`/macOS host is needed to produce a valid `.icns` from Linux or Windows CI.
+ * Type -> pixel size, including the @2x slots the shell picks per display density.
+ */
+const ICNS_ENTRIES = [
+  ['icp4', 16],
+  ['icp5', 32],
+  ['icp6', 48],
+  ['ic07', 128],
+  ['ic08', 256],
+  ['ic09', 512],
+  ['ic10', 1024],
+  ['ic11', 32],
+  ['ic12', 64],
+  ['ic13', 256],
+  ['ic14', 512],
+];
+
+function encodeIcns(pngBySize) {
+  const blocks = [];
+  for (const [type, size] of ICNS_ENTRIES) {
+    const png = pngBySize.get(size);
+    if (!png) continue;
+    const header = Buffer.alloc(8);
+    header.write(type, 0, 'ascii');
+    header.writeUInt32BE(png.length + 8, 4);
+    blocks.push(header, png);
+  }
+
+  const body = Buffer.concat(blocks);
+  const magic = Buffer.alloc(8);
+  magic.write('icns', 0, 'ascii');
+  magic.writeUInt32BE(body.length + 8, 4);
+  return Buffer.concat([magic, body]);
+}
+
 function roundedRectAlpha(x, y, n, corner) {
   const dx = Math.abs(x - n / 2) - (n / 2 - corner);
   const dy = Math.abs(y - n / 2) - (n / 2 - corner);
@@ -195,14 +232,33 @@ function render(size, samples) {
 }
 
 mkdirSync(outDir, { recursive: true });
+const linuxDir = resolve(outDir, 'linux');
+mkdirSync(linuxDir, { recursive: true });
 
 const icns = [16, 24, 32, 48, 64, 256].map((size) => ({
   size,
   data: bmpEntry(size, render(size, size >= 128 ? 2 : 4)),
 }));
 
-writeFileSync(resolve(outDir, 'icon.ico'), encodeIco(icns));
-writeFileSync(resolve(outDir, 'icon.png'), encodePng(256, render(256, 2)));
-writeFileSync(resolve(outDir, 'tray.png'), encodePng(32, render(32, 4)));
+// PNG payloads shared by the .icns container and the Linux icon directory.
+const PNG_SIZES = [16, 32, 48, 64, 128, 256, 512, 1024];
+const pngBySize = new Map();
+for (const size of PNG_SIZES) {
+  pngBySize.set(size, encodePng(size, render(size, size >= 256 ? 1 : 4)));
+}
 
-console.log('[icons] wrote icon.ico (16/24/32/48/64/256), icon.png (256), tray.png (32)');
+writeFileSync(resolve(outDir, 'icon.ico'), encodeIco(icns));
+writeFileSync(resolve(outDir, 'icon.png'), pngBySize.get(256));
+writeFileSync(resolve(outDir, 'tray.png'), encodePng(32, render(32, 4)));
+writeFileSync(resolve(outDir, 'icon.icns'), encodeIcns(pngBySize));
+
+// electron-builder picks Linux icons as `<size>x<size>.png` inside buildResources/linux.
+for (const size of [16, 32, 48, 64, 128, 256, 512]) {
+  writeFileSync(resolve(linuxDir, `${size}x${size}.png`), pngBySize.get(size));
+}
+writeFileSync(resolve(outDir, 'icon-512.png'), pngBySize.get(512));
+
+console.log(
+  '[icons] wrote icon.ico (16/24/32/48/64/256), icon.png (256), icon-512.png, tray.png (32), ' +
+    `icon.icns (${ICNS_ENTRIES.length} PNG entries), linux/ (${[16, 32, 48, 64, 128, 256, 512].join('/')} px)`
+);
