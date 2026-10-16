@@ -128,14 +128,12 @@ export default function UsagePage() {
             <tbody>
               {calls.slice(0, 20).map((call) => (
                 <tr key={call.id} className="border-b border-surface-50">
-                  <td className="py-2 text-surface-600">
-                    {new Date(call.timestamp).toLocaleTimeString()}
+                  <td className="py-2 text-surface-600 whitespace-nowrap">
+                    {formatTimestamp(call.timestamp)}
                   </td>
                   <td className="py-2 text-surface-700">{call.providerId}</td>
-                  <td className="py-2 text-surface-500 font-mono">
-                    {call.modelId.length > 20
-                      ? `...${call.modelId.slice(-17)}`
-                      : call.modelId}
+                  <td className="py-2 text-surface-500 font-mono break-all whitespace-normal">
+                    {call.modelId}
                   </td>
                   <td className="py-2">
                     <StatusBadge status={call.status} />
@@ -159,6 +157,13 @@ export default function UsagePage() {
       </div>
     </div>
   );
+}
+
+function formatTimestamp(timestamp: string): string {
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return timestamp;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function StatusBadge({ status }: { status: string }) {

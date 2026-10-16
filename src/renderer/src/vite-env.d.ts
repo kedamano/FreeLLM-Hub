@@ -7,6 +7,7 @@ interface Window {
       get: (providerId: string) => Promise<unknown>;
       test: (providerId: string) => Promise<{ success: boolean; error?: string }>;
       setCredential: (providerId: string, credential: string) => Promise<{ success: boolean }>;
+      getCredential: (providerId: string) => Promise<{ credential: string | null }>;
       removeCredential: (providerId: string) => Promise<{ success: boolean }>;
       toggle: (providerId: string, enabled: boolean) => Promise<{ success: boolean }>;
       updateBaseUrl: (

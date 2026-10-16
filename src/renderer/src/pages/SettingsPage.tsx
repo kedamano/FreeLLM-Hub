@@ -27,6 +27,7 @@ export default function SettingsPage() {
   const [tokenVisible, setTokenVisible] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [showAgentHelp, setShowAgentHelp] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -56,6 +57,7 @@ export default function SettingsPage() {
         authEnabled: snapshot.authEnabled,
       });
       setGatewayToken(snapshot.token);
+      setDirty(false);
       setLoadError(null);
     }
   }, [snapshot]);
@@ -75,8 +77,15 @@ export default function SettingsPage() {
       return;
     }
     try {
-      await api.gateway.updateConfig(gateway);
+      const result = (await api.gateway.updateConfig(gateway)) as
+        | { success?: boolean; error?: string }
+        | null;
+      if (result && result.success === false) {
+        setLoadError(result.error || '网关配置保存失败');
+        return;
+      }
       setLoadError(null);
+      setDirty(false);
       setSaved(true);
       if (savedTimer.current !== null) window.clearTimeout(savedTimer.current);
       savedTimer.current = window.setTimeout(() => setSaved(false), 2000);
@@ -133,6 +142,9 @@ export default function SettingsPage() {
             <ServerIcon size={16} className="text-primary-500" />
             <h3 className="text-sm font-semibold text-surface-800">网关服务</h3>
           </div>
+          {dirty && !saved && (
+            <span className="text-xs text-amber-600 font-medium">有未保存的修改</span>
+          )}
           {saved && (
             <span className="text-xs text-success font-medium flex items-center gap-1">
               <CheckIcon size={12} /> 已保存
@@ -173,7 +185,10 @@ export default function SettingsPage() {
               role="switch"
               aria-checked={gateway.authEnabled}
               aria-label="启用认证"
-              onClick={() => setGateway({ ...gateway, authEnabled: !gateway.authEnabled })}
+              onClick={() => {
+                setGateway({ ...gateway, authEnabled: !gateway.authEnabled });
+                setDirty(true);
+              }}
               className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${
                 gateway.authEnabled ? 'bg-primary-500' : 'bg-surface-300'
               }`}

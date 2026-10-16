@@ -7,6 +7,8 @@ const api = {
     test: (providerId: string) => ipcRenderer.invoke('providers:test', providerId),
     setCredential: (providerId: string, credential: string) =>
       ipcRenderer.invoke('providers:set-credential', providerId, credential),
+    getCredential: (providerId: string) =>
+      ipcRenderer.invoke('providers:get-credential', providerId),
     removeCredential: (providerId: string) =>
       ipcRenderer.invoke('providers:remove-credential', providerId),
     toggle: (providerId: string, enabled: boolean) =>

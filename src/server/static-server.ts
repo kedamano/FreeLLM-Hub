@@ -28,11 +28,18 @@ function contentTypeFor(filePath: string): string {
 
 function sendFile(reply: FastifyReply, filePath: string): FastifyReply {
   const content = readFileSync(filePath);
-  return reply.type(contentTypeFor(filePath)).send(content);
+  const immutable = filePath.includes(`${sep}assets${sep}`);
+  return reply
+    .header('Cache-Control', immutable ? 'public, max-age=31536000, immutable' : 'no-cache')
+    .type(contentTypeFor(filePath))
+    .send(content);
 }
 
 function sendIndex(reply: FastifyReply, indexPath: string): FastifyReply {
-  return reply.type('text/html; charset=utf-8').send(readFileSync(indexPath));
+  return reply
+    .header('Cache-Control', 'no-cache')
+    .type('text/html; charset=utf-8')
+    .send(readFileSync(indexPath));
 }
 
 export function registerStaticRenderer(app: FastifyInstance, rendererDir: string): void {

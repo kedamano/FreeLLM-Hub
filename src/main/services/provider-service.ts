@@ -68,6 +68,14 @@ export function setProviderCredential(
   }
 }
 
+export function getProviderCredential(providerId: string): { credential: string | null } {
+  try {
+    return { credential: getCredentialStore().retrieve(`${providerId}-key`) ?? null };
+  } catch {
+    return { credential: null };
+  }
+}
+
 export function removeProviderCredential(providerId: string): { success: boolean } {
   try {
     const credentialStore = getCredentialStore();
@@ -177,7 +185,7 @@ function persistDiscoveredModels(providerId: string, models: ProviderModel[]): v
         JSON.stringify(model.capabilities ?? {}),
         JSON.stringify(model.pricing ?? { type: 'unknown', currency: 'USD' }),
         model.rateLimits ? JSON.stringify(model.rateLimits) : null,
-        model.status ?? 'unknown'
+        model.status ?? 'available'
       );
     }
   });

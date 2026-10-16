@@ -49,6 +49,10 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
     providerService.removeProviderCredential(request.params.id)
   );
 
+  app.get<{ Params: { id: string } }>('/api/providers/:id/credential', async (request) =>
+    providerService.getProviderCredential(request.params.id)
+  );
+
   app.post<{ Params: { id: string }; Body: { enabled?: boolean } }>(
     '/api/providers/:id/toggle',
     async (request) => providerService.toggleProvider(scheduler, request.params.id, !!request.body?.enabled)

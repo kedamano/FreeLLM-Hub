@@ -5,6 +5,7 @@ const ALLOWED_CHANNELS = new Set<string>([
   'providers:get',
   'providers:test',
   'providers:set-credential',
+  'providers:get-credential',
   'providers:remove-credential',
   'providers:toggle',
   'providers:update-baseurl',

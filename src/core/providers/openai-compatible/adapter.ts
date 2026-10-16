@@ -461,8 +461,8 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         supportsFunctionCalling: false,
         supportsJsonMode: false,
       },
-      pricing: { type: 'unknown', currency: 'USD' },
-      status: 'unknown',
+      pricing: { type: 'free', currency: 'USD' },
+      status: 'available',
       discoveredAt: new Date().toISOString(),
     };
   }

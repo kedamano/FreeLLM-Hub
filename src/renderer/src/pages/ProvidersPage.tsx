@@ -209,6 +209,7 @@ export default function ProvidersPage() {
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const [keyIsMasked, setKeyIsMasked] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Model discovery
@@ -276,6 +277,7 @@ export default function ProvidersPage() {
       lastSyncedId.current = selectedId;
       setBaseUrl(p.baseUrl);
       setApiKey(p.hasCredential ? '••••••••••••' : '');
+      setKeyIsMasked(p.hasCredential);
       setShowKey(false);
       setDiscoveredModels([]);
       setDiscoverError(null);
@@ -354,6 +356,7 @@ export default function ProvidersPage() {
     setSaving(true);
     try {
       await api.providers.setCredential(selectedId, apiKey);
+      setKeyIsMasked(false);
       await handleDiscover();
       await loadProviders();
     } catch {
@@ -362,6 +365,33 @@ export default function ProvidersPage() {
     setSaving(false);
   }, [selectedId, apiKey, handleDiscover, loadProviders, showToast, requireApi]);
 
+  const handleApiKeyChange = useCallback((value: string) => {
+    setApiKey(value);
+    setKeyIsMasked(false);
+  }, []);
+
+  const handleToggleShowKey = useCallback(async () => {
+    if (showKey) {
+      setShowKey(false);
+      return;
+    }
+    if (keyIsMasked && selectedId) {
+      const api = getFreellmApi();
+      if (api) {
+        try {
+          const res = await api.providers.getCredential(selectedId);
+          if (res?.credential) {
+            setApiKey(res.credential);
+            setKeyIsMasked(false);
+          }
+        } catch {
+          // keep the masked placeholder if reveal fails
+        }
+      }
+    }
+    setShowKey(true);
+  }, [showKey, keyIsMasked, selectedId]);
+
   const handleRemoveCredential = useCallback(async () => {
     if (!selectedId) return;
     const api = requireApi();
@@ -369,6 +399,8 @@ export default function ProvidersPage() {
     try {
       await api.providers.removeCredential(selectedId);
       setApiKey('');
+      setKeyIsMasked(false);
+      setShowKey(false);
       setDiscoveredModels([]);
       await loadProviders();
     } catch {
@@ -509,9 +541,9 @@ export default function ProvidersPage() {
               baseUrl={baseUrl}
               setBaseUrl={setBaseUrl}
               apiKey={apiKey}
-              setApiKey={setApiKey}
+              onApiKeyChange={handleApiKeyChange}
               showKey={showKey}
-              setShowKey={setShowKey}
+              onToggleShowKey={handleToggleShowKey}
               saving={saving}
               onSaveCredential={handleSaveCredential}
               onRemoveCredential={handleRemoveCredential}
@@ -542,9 +574,9 @@ interface ConfigPanelProps {
   baseUrl: string;
   setBaseUrl: (v: string) => void;
   apiKey: string;
-  setApiKey: (v: string) => void;
+  onApiKeyChange: (v: string) => void;
   showKey: boolean;
-  setShowKey: (v: boolean) => void;
+  onToggleShowKey: () => void;
   saving: boolean;
   onSaveCredential: () => Promise<void>;
   onRemoveCredential: () => Promise<void>;
@@ -563,9 +595,9 @@ const ConfigPanel = memo(function ConfigPanel({
   baseUrl,
   setBaseUrl,
   apiKey,
-  setApiKey,
+  onApiKeyChange,
   showKey,
-  setShowKey,
+  onToggleShowKey,
   saving,
   onSaveCredential,
   onRemoveCredential,
@@ -639,13 +671,13 @@ const ConfigPanel = memo(function ConfigPanel({
               <input
                 type={showKey ? 'text' : 'password'}
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => onApiKeyChange(e.target.value)}
                 placeholder="输入 API Key 或 Token"
                 className="input-field pr-10 font-mono text-xs"
               />
               <button
                 type="button"
-                onClick={() => setShowKey(!showKey)}
+                onClick={onToggleShowKey}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-600 text-xs"
               >
                 {showKey ? '隐藏' : '显示'}
@@ -780,6 +812,7 @@ function PricingBadge({ type }: { type: string }) {
     local: { className: 'badge-blue', text: '本地' },
     freemium: { className: 'badge-yellow', text: '部分免费' },
     paid: { className: 'badge-red', text: '付费' },
+    unknown: { className: 'badge-gray', text: '未知' },
   };
   const c = config[type] || { className: 'badge-gray', text: type || '未知' };
   return <span className={`${c.className} text-[9px] px-1.5 py-0`}>{c.text}</span>;

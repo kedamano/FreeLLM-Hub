@@ -47,6 +47,8 @@ function createHttpApi(): FreeLLMApi {
         postJson<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/test`),
       setCredential: (providerId: string, credential: string) =>
         postJson<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { credential }),
+      getCredential: (providerId: string) =>
+        http<{ credential: string | null }>(`/providers/${seg(providerId)}/credential`),
       removeCredential: (providerId: string) =>
         http<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { method: 'DELETE' }),
       toggle: (providerId: string, enabled: boolean) =>
