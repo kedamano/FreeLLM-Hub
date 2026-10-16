@@ -14,6 +14,11 @@ files:
 
 asar: false
 
+# Distribution is via CI artefacts only. Without this electron-builder auto-detects the
+# GitHub repository from the git remote and, after building every target successfully,
+# fails the whole run demanding a GH_TOKEN for a publish step nobody asked for.
+publish: never
+
 # better-sqlite3 ships a Node build for `npm start`; packaged apps need the Electron ABI.
 # electron-builder rewrites native deps for the target during packaging.
 npmRebuild: true
@@ -42,11 +47,11 @@ nsis:
   deleteAppDataOnUninstall: false
 
 mac:
+  # No per-target arch list: the CI matrix passes --x64 / --arm64, and pinning arches
+  # here makes every job build every arch and upload duplicate files.
   target:
-    - target: dmg
-      arch: [x64, arm64]
-    - target: zip
-      arch: [x64, arm64]
+    - dmg
+    - zip
   category: public.app-category.developer-tools
   icon: resources/icons/icon.icns
   # CI has no Developer ID certificate. `identity: null` produces an ad-hoc signed app so
@@ -59,16 +64,13 @@ mac:
   darkModeSupport: true
 
 dmg:
-  artifactName: ${productName}-${version}-${arch}-dmg.${ext}
+  artifactName: ${productName}-${version}-${arch}.${ext}
 
 linux:
   target:
-    - target: AppImage
-      arch: [x64, arm64]
-    - target: deb
-      arch: [x64]
-    - target: tar.gz
-      arch: [x64]
+    - AppImage
+    - deb
+    - tar.gz
   icon: resources/icons/linux
   # 桌面条目分类由 desktop 段给出；`category` 只存在于 mac/win 配置里。
   desktop:
