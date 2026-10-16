@@ -301,6 +301,30 @@ describe('cost ledger and quota ceilings', () => {
     const summary = getCostSummary({ days: 7, profileId: 'default' });
     expect(summary.series).toHaveLength(7);
     expect(summary.series.filter((point) => point.requests === 0)).toHaveLength(6);
+    // Day labels are UTC (SQLite `date()`), so the newest bucket is today in UTC and
+    // the series must not silently drop it near the UTC midnight boundary.
+    expect(summary.series.at(-1)?.date).toBe(new Date().toISOString().slice(0, 10));
+    expect(summary.series.at(-1)?.requests).toBe(1);
+
+    // A call recorded at 23:30Z on the 16th is "today" for the chart even though a
+    // UTC+8 clock already reads the 17th: the buckets and the window must agree.
+    const boundary = Date.parse('2026-10-16T23:30:00.000Z');
+    insertCall({ requestId: 'boundary-1' });
+    holder.db
+      .prepare('UPDATE call_logs SET timestamp = ? WHERE request_id = ?')
+      .run(new Date(boundary).toISOString(), 'boundary-1');
+
+    const aroundMidnight = getCostSummary({ days: 3, profileId: 'default', now: boundary });
+    expect(aroundMidnight.series.map((point) => point.date)).toEqual([
+      '2026-10-14',
+      '2026-10-15',
+      '2026-10-16',
+    ]);
+    // Other calls recorded by this spec may share the bucket, so assert containment
+    // rather than an exact count; the point is that the UTC day is present at all.
+    expect((aroundMidnight.series.at(-1)?.requests ?? 0)).toBeGreaterThanOrEqual(1);
+    // A local-time (UTC+8) label would name the 17th and silently drop this data.
+    expect(aroundMidnight.series.some((point) => point.date === '2026-10-17')).toBe(false);
   });
 
   it('merges configured ceilings with live usage for the quota panel', () => {

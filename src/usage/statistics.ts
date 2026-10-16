@@ -220,11 +220,16 @@ export function getDailyStats(days: number = 7, profileId: string = getActivePro
  * `call_logs`, which now carries the per-call cost columns, so there is no
  * separate rollup job to drift out of sync.
  */
-export function getCostSummary(options: { days?: number; profileId?: string } = {}): CostSummary {
+export function getCostSummary(
+  options: { days?: number; profileId?: string; now?: number } = {}
+): CostSummary {
   const days = Math.min(Math.max(options.days ?? 30, 1), 365);
   const profileId = options.profileId ?? getActiveProfileId();
+  // Injectable clock so the UTC day-boundary behaviour is testable rather than
+  // dependent on when the suite happens to run.
+  const now = options.now ?? Date.now();
   const db = getDatabase();
-  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
   const where = scopeSql(['timestamp >= ?', PROFILE_MATCH]);
 
   const totals = db
@@ -350,7 +355,7 @@ export function getCostSummary(options: { days?: number; profileId?: string } = 
     tokens: Number(row.tokens ?? 0),
     costUsd: Number(row.cost ?? 0),
     savedCostUsd: Number(row.saved ?? 0),
-  })), days);
+  })), days, now);
 
   const tokens = totals.prompt_tokens + totals.completion_tokens;
 
@@ -374,16 +379,22 @@ export function getCostSummary(options: { days?: number; profileId?: string } = 
   };
 }
 
-/** Dense the series so a chart's x-axis keeps every day in the window. */
-function fillMissingDays(points: CostSeriesPoint[], days: number): CostSeriesPoint[] {
-  if (days > 180) return points;
+/**
+ * Dense the series so a chart's x-axis keeps every day in the window.
+ *
+ * Day labels come from SQLite `date(timestamp)`, which is UTC-based, so the generated
+ * labels must be UTC too. Using the local calendar here drops the most recent data
+ * point during the hours where local and UTC dates disagree (UTC+8 is in that window
+ * from 00:00 to 08:00 local time).
+ */
+function fillMissingDays(points: CostSeriesPoint[], days: number, now: number = Date.now()): CostSeriesPoint[] {
+  if (days > 365) return points;
   const byDate = new Map(points.map((point) => [point.date, point]));
   const result: CostSeriesPoint[] = [];
-  const today = new Date();
   for (let offset = days - 1; offset >= 0; offset--) {
-    const date = new Date(today.getTime() - offset * 24 * 60 * 60 * 1000);
-    const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
-      date.getDate()
+    const date = new Date(now - offset * 24 * 60 * 60 * 1000);
+    const iso = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(
+      date.getUTCDate()
     ).padStart(2, '0')}`;
     result.push(byDate.get(iso) ?? { date: iso, requests: 0, tokens: 0, costUsd: 0, savedCostUsd: 0 });
   }
