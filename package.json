@@ -1,6 +1,6 @@
 {
   "name": "freellm-hub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "FreeLLM Hub - Windows 本地免费大模型聚合与智能调度平台",
   "main": "dist/main/index.js",
   "author": "FreeLLM Hub Team",
