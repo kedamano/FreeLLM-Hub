@@ -17,7 +17,7 @@ import { getTaskRoute } from './task-router.js';
 import { isRetriable, getErrorCode } from './fallback.js';
 import { getProviderRegistry } from '../core/providers/registry.js';
 import type { ChatOptions } from '../core/providers/contracts.js';
-import { AllProvidersFailedError } from '../shared/errors/index.js';
+import { AllProvidersFailedError, RateLimitError } from '../shared/errors/index.js';
 import { estimateTokens, estimateMessagesTokens } from '../usage/tokenizer.js';
 
 const MODEL_CATALOG_TTL_MS = 60000;
@@ -31,6 +31,7 @@ export interface SchedulerOptions {
 
 export interface SelectModelOptions {
   excludeProviders?: ProviderId[];
+  excludeModels?: string[];
   estimatedTokens?: number;
 }
 
@@ -73,6 +74,7 @@ export class Scheduler {
     const taskType = request.taskType || 'general';
     const route = getTaskRoute(taskType);
     const excluded = options?.excludeProviders || [];
+    const excludedModels = options?.excludeModels || [];
     const estimatedTokens = options?.estimatedTokens ?? this.estimateRequestTokens(request);
 
     let candidates = filterCandidates(availableModels, {
@@ -81,6 +83,13 @@ export class Scheduler {
       preferFree: true,
       excludeProviders: excluded,
     });
+
+    // Drop already-attempted provider:model pairs *before* the exact-match
+    // pinning below, so a rate-limited or failed model releases the pin and
+    // the retry falls back to whatever else the free pool can serve.
+    if (excludedModels.length > 0) {
+      candidates = candidates.filter((m) => !excludedModels.includes(`${m.providerId}:${m.id}`));
+    }
 
     if (request.model) {
       const requested = candidates.filter(
@@ -167,11 +176,13 @@ export class Scheduler {
 
     let lastError: Error | null = null;
     const attemptedProviders: ProviderId[] = [];
+    const attemptedModels: string[] = [];
     const failures: Array<{ providerId: ProviderId; error: string }> = [];
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const decision = await this.selectModel(request, availableModels, {
         excludeProviders: attemptedProviders,
+        excludeModels: attemptedModels,
         estimatedTokens,
       });
 
@@ -180,11 +191,15 @@ export class Scheduler {
         throw new Error('No available models for this request');
       }
 
-      attemptedProviders.push(decision.providerId);
+      const modelKey = `${decision.providerId}:${decision.model.id}`;
+      if (!attemptedModels.includes(modelKey)) attemptedModels.push(modelKey);
 
       const adapter = registry.get(decision.providerId);
       if (!adapter) {
         this.circuitBreaker.release(decision.providerId);
+        if (!attemptedProviders.includes(decision.providerId)) {
+          attemptedProviders.push(decision.providerId);
+        }
         continue;
       }
 
@@ -220,6 +235,16 @@ export class Scheduler {
         });
         this.circuitBreaker.recordFailure(decision.providerId);
 
+        // A single hot (rate-limited) model must not blacklist its whole
+        // provider — only that model is excluded. Other failures take the
+        // provider out for subsequent attempts.
+        if (
+          !(err instanceof RateLimitError) &&
+          !attemptedProviders.includes(decision.providerId)
+        ) {
+          attemptedProviders.push(decision.providerId);
+        }
+
         if (!isRetriable(err) || !this.retryPolicy.shouldRetry(attempt, getErrorCode(err))) {
           break;
         }
@@ -246,69 +271,109 @@ export class Scheduler {
     model: string;
     providerId: ProviderId;
   }> {
+    const maxRetries = options?.maxRetries ?? this.retryPolicy.getMaxRetries();
     const registry = getProviderRegistry();
     const availableModels = await this.collectModels(registry);
     const estimatedTokens = this.estimateRequestTokens(request);
-    const decision = await this.selectModel(request, availableModels, {
-      estimatedTokens,
-    });
 
-    if (!decision) {
-      throw new Error('No available models for streaming');
-    }
+    const attemptedProviders: ProviderId[] = [];
+    const attemptedModels: string[] = [];
+    let lastError: Error | null = null;
 
-    const adapter = registry.get(decision.providerId);
-    if (!adapter) {
-      this.circuitBreaker.release(decision.providerId);
-      throw new Error(`Provider ${decision.providerId} not found`);
-    }
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const decision = await this.selectModel(request, availableModels, {
+        estimatedTokens,
+        excludeProviders: attemptedProviders,
+        excludeModels: attemptedModels,
+      });
 
-    const chatOptions: ChatOptions = {
-      maxTokens: request.maxTokens,
-      temperature: request.temperature,
-      signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
-      tools: request.tools,
-      responseFormat: request.responseFormat,
-    };
-
-    let fullContent = '';
-    let upstreamUsage: GatewayUsage | null = null;
-
-    try {
-      for await (const chunk of adapter.chatStream(request.messages, decision.model.id, chatOptions)) {
-        if (chunk.content) {
-          fullContent += chunk.content;
-        }
-        if (chunk.usage) {
-          upstreamUsage = chunk.usage;
-        }
-        yield {
-          content: chunk.content,
-          finishReason: chunk.finishReason,
-          usage: chunk.usage,
-          model: decision.model.id,
-          providerId: decision.providerId,
-        };
+      if (!decision) {
+        if (lastError) break;
+        throw new Error('No available models for streaming');
       }
-    } catch (err) {
-      this.circuitBreaker.recordFailure(decision.providerId);
-      throw err;
+
+      const modelKey = `${decision.providerId}:${decision.model.id}`;
+      if (!attemptedModels.includes(modelKey)) attemptedModels.push(modelKey);
+
+      const adapter = registry.get(decision.providerId);
+      if (!adapter) {
+        this.circuitBreaker.release(decision.providerId);
+        if (!attemptedProviders.includes(decision.providerId)) {
+          attemptedProviders.push(decision.providerId);
+        }
+        continue;
+      }
+
+      const chatOptions: ChatOptions = {
+        maxTokens: request.maxTokens,
+        temperature: request.temperature,
+        signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
+        tools: request.tools,
+        responseFormat: request.responseFormat,
+      };
+
+      let fullContent = '';
+      let upstreamUsage: GatewayUsage | null = null;
+      let yieldedAny = false;
+
+      try {
+        for await (const chunk of adapter.chatStream(request.messages, decision.model.id, chatOptions)) {
+          if (chunk.content) {
+            fullContent += chunk.content;
+          }
+          if (chunk.usage) {
+            upstreamUsage = chunk.usage;
+          }
+          yieldedAny = true;
+          yield {
+            content: chunk.content,
+            finishReason: chunk.finishReason,
+            usage: chunk.usage,
+            model: decision.model.id,
+            providerId: decision.providerId,
+          };
+        }
+      } catch (err) {
+        this.circuitBreaker.recordFailure(decision.providerId);
+        lastError = err instanceof Error ? err : new Error(String(err));
+
+        // Once bytes have reached the client we cannot restart the stream,
+        // so fall back to another model only if the failure was immediate.
+        const retriable = isRetriable(err) && this.retryPolicy.shouldRetry(attempt, getErrorCode(err));
+        if (yieldedAny || !retriable) {
+          throw err;
+        }
+
+        if (
+          !(err instanceof RateLimitError) &&
+          !attemptedProviders.includes(decision.providerId)
+        ) {
+          attemptedProviders.push(decision.providerId);
+        }
+
+        await new Promise((r) => setTimeout(r, this.retryPolicy.getDelay(attempt)));
+        continue;
+      }
+
+      const promptTokens =
+        upstreamUsage?.promptTokens ?? estimateMessagesTokens(request.messages);
+      const completionTokens = upstreamUsage?.completionTokens ?? estimateTokens(fullContent);
+      const totalTokens = upstreamUsage?.totalTokens ?? promptTokens + completionTokens;
+      const usage: GatewayUsage = { promptTokens, completionTokens, totalTokens };
+
+      this.circuitBreaker.recordSuccess(decision.providerId);
+      this.rateLimiter.record(
+        `${decision.providerId}:${decision.model.id}`,
+        totalTokens - estimatedTokens
+      );
+      this.quotaManager.record(decision.providerId, 1, totalTokens, decision.model.id);
+
+      yield { usage, model: decision.model.id, providerId: decision.providerId };
+      return;
     }
 
-    const promptTokens =
-      upstreamUsage?.promptTokens ?? estimateMessagesTokens(request.messages);
-    const completionTokens = upstreamUsage?.completionTokens ?? estimateTokens(fullContent);
-    const totalTokens = upstreamUsage?.totalTokens ?? promptTokens + completionTokens;
-    const usage: GatewayUsage = { promptTokens, completionTokens, totalTokens };
-
-    this.circuitBreaker.recordSuccess(decision.providerId);
-    this.rateLimiter.record(
-      `${decision.providerId}:${decision.model.id}`,
-      totalTokens - estimatedTokens
-    );
-    this.quotaManager.record(decision.providerId, 1, totalTokens, decision.model.id);
-
-    yield { usage, model: decision.model.id, providerId: decision.providerId };
+    if (lastError) throw lastError;
+    throw new Error('All providers failed for streaming request');
   }
 
   getRateLimiter(): RateLimiter {
@@ -334,7 +399,21 @@ export class Scheduler {
   private async collectModels(registry: {
     getAll(): ProviderAdapter[];
   }): Promise<ProviderModel[]> {
-    const adapters = registry.getAll().filter((a) => a.getProviderConfig().isEnabled);
+    const adapters = registry.getAll().filter((a) => {
+      const config = a.getProviderConfig();
+      if (!config.isEnabled) return false;
+      // Providers that require a credential but have none configured can
+      // never serve a request; keeping them out of the candidate pool lets
+      // rate-limit fallback reach models that actually work.
+      if (
+        config.authType !== 'none' &&
+        config.credentialStatus !== 'configured' &&
+        config.credentialStatus !== 'valid'
+      ) {
+        return false;
+      }
+      return true;
+    });
     const batches = await Promise.all(
       adapters.map(async (adapter) => {
         try {

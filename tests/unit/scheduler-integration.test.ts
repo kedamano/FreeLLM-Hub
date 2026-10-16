@@ -268,6 +268,84 @@ describe('Scheduler gateway dispatch', () => {
     expect(result.providerId).toBe(providerB);
   });
 
+  it('should fall back to another model of the same provider when the requested model is rate limited', async () => {
+    getProviderRegistry().register(
+      createMockAdapter({
+        providerId: providerA,
+        getProviderConfig: () => createMockConfig({ id: providerA }),
+        listModels: vi.fn().mockResolvedValue([
+          createCatalogModel(providerA, 'model-a'),
+          createCatalogModel(providerA, 'model-b'),
+        ]),
+        chat: vi.fn().mockImplementation(async (_m, model) => {
+          if (model === 'model-a') throw new RateLimitError(providerA);
+          return {
+            content: `answered:${model}`,
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            finishReason: 'stop',
+          };
+        }),
+      })
+    );
+
+    const result = await scheduler.execute(createRequest({ model: 'model-a' }), { maxRetries: 2 });
+
+    expect(result.providerId).toBe(providerA);
+    expect(result.model).toBe('model-b');
+  });
+
+  it('should fall back to another model in a stream when the first is rate limited before any chunk', async () => {
+    getProviderRegistry().register(
+      createMockAdapter({
+        providerId: providerA,
+        getProviderConfig: () => createMockConfig({ id: providerA }),
+        listModels: vi.fn().mockResolvedValue([
+          createCatalogModel(providerA, 'model-a'),
+          createCatalogModel(providerA, 'model-b'),
+        ]),
+        chatStream: vi.fn().mockImplementation(async function* (_m, model) {
+          if (model === 'model-a') throw new RateLimitError(providerA);
+          yield { content: `stream:${model}`, finishReason: 'stop' };
+        }),
+      })
+    );
+
+    const chunks: Array<{ model: string; content?: string }> = [];
+    for await (const chunk of scheduler.executeStream(createRequest({ model: 'model-a' }), {
+      maxRetries: 2,
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks[0].model).toBe('model-b');
+    expect(chunks[0].content).toBe('stream:model-b');
+  });
+
+  it('should exclude providers without configured credentials from scheduling', async () => {
+    const chatB = vi.fn();
+    getProviderRegistry().register(
+      createMockAdapter({
+        providerId: providerA,
+        getProviderConfig: () => createMockConfig({ id: providerA }),
+        listModels: vi.fn().mockResolvedValue([createCatalogModel(providerA, 'model-a')]),
+      })
+    );
+    getProviderRegistry().register(
+      createMockAdapter({
+        providerId: providerB,
+        getProviderConfig: () =>
+          createMockConfig({ id: providerB, credentialStatus: 'unconfigured' }),
+        listModels: vi.fn().mockResolvedValue([createCatalogModel(providerB, 'model-b')]),
+        chat: chatB,
+      })
+    );
+
+    const result = await scheduler.execute(createRequest());
+
+    expect(result.providerId).toBe(providerA);
+    expect(chatB).not.toHaveBeenCalled();
+  });
+
   it('should stop retrying on a non-retriable typed error', async () => {
     const chatB = vi.fn();
     getProviderRegistry().register(
