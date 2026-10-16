@@ -60,6 +60,8 @@ function createHttpApi(): FreeLLMApi {
         postJson<{ success: boolean; models?: unknown[]; error?: string }>(
           `/providers/${seg(providerId)}/discover-models`
         ),
+      getModels: (providerId: string) =>
+        http<unknown[]>(`/providers/${seg(providerId)}/models`),
     },
     models: {
       list: () => http<unknown[]>('/models'),

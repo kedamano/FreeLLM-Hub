@@ -27,4 +27,7 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
   registerIpcHandler('providers:discover-models', async (_e, providerId: string) =>
     providerService.discoverProviderModels(providerId)
   );
+  registerIpcHandler('providers:get-models', async (_e, providerId: string) =>
+    providerService.getPersistedProviderModels(providerId)
+  );
 }

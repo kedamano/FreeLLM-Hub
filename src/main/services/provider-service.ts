@@ -1,9 +1,11 @@
 import type { Scheduler } from '../../scheduler/scheduler.js';
+import type { ModelCapabilities, ModelPricing, ProviderModel } from '../../shared/types/index.js';
 import { getProviderRegistry } from '../../core/providers/index.js';
 import { applyEnabled, applyCredential, hotSwap, ENABLED_KEY_PREFIX } from '../../core/providers/bootstrap.js';
 import { getCredentialStore } from '../security/credential-store.js';
 import { redactSecrets } from '../security/secret-redaction.js';
 import { writeSetting } from '../../core/settings/settings-store.js';
+import { getDatabase } from '../../core/database/database.js';
 
 export function listProviders(scheduler: Scheduler) {
   const registry = getProviderRegistry();
@@ -111,6 +113,11 @@ export async function discoverProviderModels(providerId: string): Promise<{
   if (!adapter) return { success: false, error: 'Provider not found', models: [] };
   try {
     const models = await adapter.listModels();
+    try {
+      persistDiscoveredModels(providerId, models);
+    } catch (err) {
+      console.warn(`[providers] failed to persist discovered models for ${providerId}:`, err);
+    }
     return { success: true, providerId, models };
   } catch (err) {
     return {
@@ -119,5 +126,97 @@ export async function discoverProviderModels(providerId: string): Promise<{
       error: redactSecrets(err instanceof Error ? err.message : String(err)),
       models: [],
     };
+  }
+}
+
+function persistDiscoveredModels(providerId: string, models: ProviderModel[]): void {
+  const registryEntry = getProviderRegistry().get(providerId);
+  if (!registryEntry) return;
+  const config = registryEntry.getProviderConfig();
+  const db = getDatabase();
+
+  const upsertProvider = db.prepare(`
+    INSERT INTO providers (id, display_name, auth_type, base_url, is_enabled, is_built_in, credential_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      display_name = excluded.display_name,
+      base_url = excluded.base_url,
+      is_enabled = excluded.is_enabled,
+      credential_status = excluded.credential_status,
+      updated_at = datetime('now')
+  `);
+  const upsertModel = db.prepare(`
+    INSERT INTO models (id, provider_id, display_name, description, capabilities, pricing, rate_limits, status, discovered_at, last_checked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(id, provider_id) DO UPDATE SET
+      display_name = excluded.display_name,
+      description = excluded.description,
+      capabilities = excluded.capabilities,
+      pricing = excluded.pricing,
+      rate_limits = excluded.rate_limits,
+      status = excluded.status,
+      last_checked_at = excluded.last_checked_at
+  `);
+
+  const tx = db.transaction(() => {
+    upsertProvider.run(
+      config.id,
+      config.displayName,
+      config.authType,
+      config.baseUrl ?? '',
+      config.isEnabled ? 1 : 0,
+      config.isBuiltIn ? 1 : 0,
+      config.credentialStatus
+    );
+    for (const model of models) {
+      upsertModel.run(
+        model.id,
+        providerId,
+        model.displayName,
+        model.description ?? null,
+        JSON.stringify(model.capabilities ?? {}),
+        JSON.stringify(model.pricing ?? { type: 'unknown', currency: 'USD' }),
+        model.rateLimits ? JSON.stringify(model.rateLimits) : null,
+        model.status ?? 'unknown'
+      );
+    }
+  });
+  tx();
+}
+
+const EMPTY_CAPABILITIES: ModelCapabilities = {
+  supported: [],
+  contextWindow: 0,
+  supportsStreaming: false,
+  supportsVision: false,
+  supportsFunctionCalling: false,
+  supportsJsonMode: false,
+};
+
+export function getPersistedProviderModels(providerId: string): ProviderModel[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare('SELECT * FROM models WHERE provider_id = ? ORDER BY display_name COLLATE NOCASE')
+    .all(providerId) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: String(row.id),
+    providerId: String(row.provider_id),
+    displayName: String(row.display_name),
+    description: row.description ? String(row.description) : undefined,
+    capabilities: parseJson<ModelCapabilities>(row.capabilities, EMPTY_CAPABILITIES),
+    pricing: parseJson<ModelPricing>(row.pricing, { type: 'unknown', currency: 'USD' }),
+    rateLimits: row.rate_limits ? parseJson<ProviderModel['rateLimits']>(row.rate_limits, undefined) : undefined,
+    status: (row.status as ProviderModel['status']) ?? 'unknown',
+    discoveredAt: String(row.discovered_at ?? ''),
+    lastCheckedAt: row.last_checked_at ? String(row.last_checked_at) : undefined,
+  }));
+}
+
+function parseJson<T>(value: unknown, fallback: T): T {
+  if (typeof value !== 'string') return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
   }
 }

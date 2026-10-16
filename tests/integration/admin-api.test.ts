@@ -47,8 +47,13 @@ vi.mock('../../src/core/config/app-config.js', () => ({
 
 vi.mock('../../src/core/database/database.js', () => {
   const settings = new Map<string, string>();
+  const modelRows = new Map<string, Record<string, unknown>>();
+  const providerRows = new Map<string, Record<string, unknown>>();
   const db = {
     exec: () => undefined,
+    transaction(fn: () => void) {
+      return fn;
+    },
     prepare(sql: string) {
       if (sql.includes('SELECT value FROM settings WHERE key = ?')) {
         return {
@@ -72,6 +77,48 @@ vi.mock('../../src/core/database/database.js', () => {
             settings.delete(key);
             return { changes: 1 };
           },
+        };
+      }
+      if (sql.includes('INSERT INTO providers')) {
+        return {
+          run: (id: string, display_name: string, auth_type: string, base_url: string) => {
+            providerRows.set(id, { id, display_name, auth_type, base_url });
+            return { changes: 1 };
+          },
+        };
+      }
+      if (sql.includes('INSERT INTO models')) {
+        return {
+          run: (
+            id: string,
+            provider_id: string,
+            display_name: string,
+            description: string | null,
+            capabilities: string,
+            pricing: string,
+            rate_limits: string | null,
+            status: string
+          ) => {
+            modelRows.set(`${provider_id}:${id}`, {
+              id,
+              provider_id,
+              display_name,
+              description,
+              capabilities,
+              pricing,
+              rate_limits,
+              status,
+              discovered_at: '2026-10-16 00:00:00',
+              last_checked_at: '2026-10-16 00:00:00',
+            });
+            return { changes: 1 };
+          },
+        };
+      }
+      if (sql.includes('SELECT * FROM models WHERE provider_id = ?')) {
+        return {
+          all: (providerId: string) =>
+            [...modelRows.values()].filter((row) => row.provider_id === providerId),
         };
       }
       throw new Error(`Unexpected SQL in test db mock: ${sql}`);
@@ -265,6 +312,19 @@ describe('Admin API', () => {
     expect(body.success).toBe(false);
     expect(body.models).toEqual([]);
     expect(body.error).toContain('ECONNREFUSED');
+  });
+
+  it('persists discovered models and serves them back via GET /models', async () => {
+    h.listModels.mockResolvedValue(STATIC_MODELS);
+    const discover = await app.inject({ method: 'POST', url: '/api/providers/groq/discover-models' });
+    expect((discover.json() as { success: boolean }).success).toBe(true);
+
+    const res = await app.inject({ method: 'GET', url: '/api/providers/groq/models' });
+    expect(res.statusCode).toBe(200);
+    const models = res.json() as Array<Record<string, unknown>>;
+    expect(models.map((m) => m.id)).toEqual(STATIC_MODELS.map((m) => m.id));
+    expect(models[0].capabilities).toEqual(STATIC_MODELS[0].capabilities);
+    expect(models[0].pricing).toEqual(STATIC_MODELS[0].pricing);
   });
 
   it('collects models for the catalog', async () => {

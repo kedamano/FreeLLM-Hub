@@ -282,6 +282,28 @@ export default function ProvidersPage() {
     }
   }, [selectedId, providers]);
 
+  // Restore the last persisted discovery result so switching pages
+  // (or restarting the app) no longer empties the model list.
+  useEffect(() => {
+    if (!selectedId) return;
+    const api = getFreellmApi();
+    if (!api) return;
+    let cancelled = false;
+    api.providers
+      .getModels(selectedId)
+      .then((models) => {
+        if (!cancelled && Array.isArray(models) && models.length > 0) {
+          setDiscoveredModels(models as ProviderModel[]);
+        }
+      })
+      .catch(() => {
+        // nothing persisted yet for this provider; keep the empty state
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
   //── Derived state ─────────────────────────────────────────────────
 
   const groupedProviders = useMemo(

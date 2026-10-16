@@ -15,6 +15,8 @@ const api = {
       ipcRenderer.invoke('providers:update-baseurl', providerId, baseUrl),
     discoverModels: (providerId: string) =>
       ipcRenderer.invoke('providers:discover-models', providerId),
+    getModels: (providerId: string) =>
+      ipcRenderer.invoke('providers:get-models', providerId),
   },
 
   models: {

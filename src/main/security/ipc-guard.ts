@@ -9,6 +9,7 @@ const ALLOWED_CHANNELS = new Set<string>([
   'providers:toggle',
   'providers:update-baseurl',
   'providers:discover-models',
+  'providers:get-models',
   'models:list',
   'models:get',
   'models:discover',

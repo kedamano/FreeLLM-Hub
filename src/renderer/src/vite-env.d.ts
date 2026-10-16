@@ -18,6 +18,7 @@ interface Window {
         models?: unknown[];
         error?: string;
       }>;
+      getModels: (providerId: string) => Promise<unknown[]>;
     };
     models: {
       list: () => Promise<unknown[]>;

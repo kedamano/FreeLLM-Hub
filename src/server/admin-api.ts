@@ -63,6 +63,10 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
     providerService.discoverProviderModels(request.params.id)
   );
 
+  app.get<{ Params: { id: string } }>('/api/providers/:id/models', async (request) =>
+    providerService.getPersistedProviderModels(request.params.id)
+  );
+
   // ─── Models ────────────────────────────────────────────────────────
   app.get('/api/models', async () => modelService.collectModels());
 
