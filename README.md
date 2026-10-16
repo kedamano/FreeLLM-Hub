@@ -52,11 +52,17 @@ FreeLLM Hub 把这些脏活收进一个本地进程：**对外一个端点，对
 
 ![模型目录](docs/images/models.png)
 
-### 用量统计
+### 用量与成本
 
-按服务商聚合的成功/失败次数，以及带时间、模型、延迟、Token 的逐条调用记录。
+按服务商 / 模型 / 任务类型聚合的 Token 用量、每日额度消耗条，以及「免费池替你省了多少」的成本曲线
+（对比可编辑的付费基准价）。
 
 ![用量统计](docs/images/usage.png)
+
+### 请求审计
+
+网关侧每个请求一行审计记录 + 一条决策轨迹：哪个候选被跳过、为什么（熔断 / 限流 / 超额）、重试了几次、
+首字节耗时多少。被令牌校验或参数校验挡在路由之外的流量同样有记录。
 
 ## 核心能力
 
@@ -69,7 +75,11 @@ FreeLLM Hub 把这些脏活收进一个本地进程：**对外一个端点，对
 | **每日配额** | 按服务商设置每日请求数 / Token 上限，用尽后调度器自动跳过；配额与当日用量落库，**重启不清零** |
 | **多密钥轮换** | 每个服务商最多保存 5 把 API Key，命中 429 / 鉴权失败时自动切换下一把 |
 | **限流与熔断** | 令牌桶限流（预留—回滚—对账语义）+ 进程内熔断器，重启后给故障服务商一次新的机会 |
-| **用量统计** | 完整调用日志、每日统计、成功率与 Token 估算，并按保留策略自动清理过期记录 |
+| **成本可视化** | 每次调用折算实际成本与付费基准成本，`节省额 = 基准 - 实际`；按天 / 服务商 / 模型 / 任务类型聚合出图，基准价可自定义 |
+| **请求审计** | 网关侧 `request_audit` + 决策轨迹表，贯穿同一个 `request_id`（也可复用客户端传来的 `X-Request-Id`），含被拒流量与流式首字节耗时 |
+| **多配置档** | 按项目维护各自的免费池：启用哪些服务商、Base URL/参数、每日额度与当日用量互相隔离，一键切换即时生效，未覆盖项继承默认档 |
+| **OAuth 服务商** | 授权码 + PKCE、一次性 127.0.0.1 回调端口、令牌到期前主动刷新、401 被动刷新重试，过期与失效状态如实落库并显示在界面上 |
+| **用量统计** | 完整调用日志、每日统计、成功率与 Token 估算，并按保留策略自动清理过期记录（调用日志与审计轨迹同步清理） |
 | **安全存储** | 凭证经 Electron `safeStorage`（Windows DPAPI）加密落盘，日志与错误消息中不出现明文 |
 | **两种运行形态** | Electron 桌面端，或纯 Node 的本地 Web 管理端，二者共用同一套服务层与界面 |
 
@@ -81,7 +91,7 @@ FreeLLM Hub 把这些脏活收进一个本地进程：**对外一个端点，对
 | --- | --- |
 | Node.js | 20 LTS 或更高 |
 | npm | 10+ |
-| 操作系统 | Windows 10/11 64 位（macOS / Linux 可自行构建，未做官方打包） |
+| 操作系统 | Windows 10/11 64 位、macOS（x64 / Apple Silicon）、Linux（AppImage / deb） |
 
 ```bash
 npm install
@@ -213,7 +223,7 @@ src/
 │   ├── providers/  # Provider 适配器与注册表
 │   └── settings/   # 设置存储
 ├── scheduler/      # 智能调度器（候选过滤、评分、熔断、限流、配额）
-├── usage/          # 用量统计、Token 估算、日志保留
+├── usage/          # 调用账本、成本台账、请求审计、Token 估算、日志保留
 └── shared/         # 共享类型、错误、IPC 通道契约、工具
 ```
 
@@ -236,7 +246,9 @@ src/
 | `npm run dev:web` | 仅本地 Web 服务（热重载） |
 | `npm run start:web` | 以生产构建运行 Web 服务（需先 `npm run build`） |
 | `npm run build` | 构建主进程与渲染进程到 `dist/` |
-| `npm run package` | 打包 Windows portable + 安装程序到 `release/` |
+| `npm run package` | 按当前操作系统打包到 `release/` |
+| `npm run package:win` / `package:mac` / `package:linux` | 指定平台打包（macOS 产物必须在 macOS 上构建） |
+| `npm run package:all` / `package:dir` | 全平台打包 / 仅解包目录（调试用） |
 | `npm test` | Vitest 全量测试 |
 | `npm run typecheck` | 主进程与渲染进程类型检查 |
 | `npm run lint` | ESLint（`src/` 与 `scripts/`） |
@@ -245,7 +257,9 @@ src/
 | `npm run gen:icons` | 重新生成 `resources/icons/` 下的图标资源 |
 | `npm run rebuild:node` / `rebuild:electron` | 切换 `better-sqlite3` 的 ABI |
 
-提交前请确保 `npm test`、`npm run typecheck`、`npm run lint` 均通过，CI 会在 Windows 与 Linux 矩阵上执行同样的检查。
+提交前请确保 `npm test`、`npm run typecheck`、`npm run lint` 均通过，CI 会在 Windows 与 Linux 矩阵上执行同样的检查；
+推送到 `main` 时还会在 Windows / Linux(x64、arm64) / macOS 上各自产出安装包并上传为构建产物，
+详见 [docs/release-checklist.md](docs/release-checklist.md)。
 
 ## 常见问题
 
@@ -259,7 +273,8 @@ src/
 electron-builder 解包签名工具链需要创建符号链接，普通权限的终端会失败；用管理员终端或开启 Windows「开发者模式」，详见 [docs/release-checklist.md](docs/release-checklist.md)。
 
 **上游一直 429**
-先看「用量统计」页确认是否当日配额用尽，再看「服务商」页的剩余额度；调度器会自动跳过额度耗尽的服务商。更多见 [docs/troubleshooting.md](docs/troubleshooting.md)。
+先看「用量与成本」页的额度消耗条确认是否当日配额用尽，再看「服务商」页的剩余额度；仍不清楚就打开「请求审计」，
+该请求的候选跳过原因与重试轨迹都在里面。更多见 [docs/troubleshooting.md](docs/troubleshooting.md)。
 
 ## 文档
 
@@ -283,11 +298,19 @@ electron-builder 解包签名工具链需要创建符号链接，普通权限的
 
 ## Roadmap
 
-- [ ] macOS / Linux 打包与 CI 产物发布
-- [ ] 服务商额度用量的成本可视化
-- [ ] OAuth 类服务商与自动刷新凭证
-- [ ] 多配置档（不同项目切换不同免费池）
-- [ ] 网关侧的请求审计与可观测性面板
+已完成（本仓库当前分支）：
+
+- [x] macOS / Linux 打包与 CI 产物发布（`dmg`/`zip`、`AppImage`/`deb`/`tar.gz`、三平台矩阵 + `upload-artifact`）
+- [x] 服务商额度用量的成本可视化（成本台账 + recharts 趋势图 + 额度消耗条）
+- [x] OAuth 类服务商与自动刷新凭证（授权码 + PKCE 框架，自定义服务商可直接接入）
+- [x] 多配置档（不同项目切换不同免费池）
+- [x] 网关侧的请求审计与可观测性面板
+
+下一步：
+
+- [ ] 为具体免费服务商内置 OAuth 规格（client_id 申请与文档化）
+- [ ] macOS 公证（notarization）与 Windows 代码签名流水线
+- [ ] 审计轨迹的按天预聚合与导出（CSV / JSONL）
 
 ## 贡献
 

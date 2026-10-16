@@ -234,3 +234,51 @@ GET /health
 |------|------|------|------|
 | `app:version` | - | string | 应用版本 |
 | `app:data-path` | - | string | 数据目录路径 |
+
+## 配置档（Profile）
+
+| IPC 通道 | Web REST | 说明 |
+| --- | --- | --- |
+| `profiles:list` | `GET /api/profiles` | 全部配置档 + 各自统计（启用数、配额数、请求/Token/成本） |
+| `profiles:active` | `GET /api/profiles/active` | 当前生效的配置档 |
+| `profiles:get` | `GET /api/profiles/:id` | 单个配置档 |
+| `profiles:create` | `POST /api/profiles` | 新建，可 `copyFrom` 复制现有池 |
+| `profiles:update` | `PUT /api/profiles/:id` | 重命名 / 改描述 |
+| `profiles:delete` | `DELETE /api/profiles/:id` | 删除（默认档与生效中的档不可删） |
+| `profiles:switch` | `POST /api/profiles/:id/activate` | 切换并即时重放到调度器 |
+| `profiles:duplicate` | `POST /api/profiles/duplicate` | 覆盖到另一个档 |
+| `profiles:reset-pool` | `POST /api/profiles/:id/reset-pool` | 清空该档覆盖，回到继承状态 |
+
+## 成本与额度
+
+| IPC 通道 | Web REST | 说明 |
+| --- | --- | --- |
+| `usage:cost-summary` | `GET /api/usage/cost?days=30&profileId=` | 成本台账：实际/基准/节省、按服务商/模型/任务类型、按天序列 |
+| `usage:quota-usage` | `GET /api/usage/quota` | 每个服务商的每日额度上限、已用、剩余与今日成本 |
+| `usage:daily-by-provider` | `GET /api/usage/timeseries-by-provider?days=14` | 堆叠趋势的 (日期, 服务商) 明细 |
+
+成本三列写在 `call_logs`：`cost_usd`（服务商实际收取）、`reference_cost_usd`（按基准价折算）、
+`saved_cost_usd`（两者之差，不小于 0）。基准价是可编辑设置 `cost_reference_price`
+（`{label,currency,inputPer1M,outputPer1M}`），汇率覆盖设置 `currency_rates`。
+
+## 请求审计
+
+| IPC 通道 | Web REST | 说明 |
+| --- | --- | --- |
+| `usage:audit-list` | `GET /api/audit/requests` 或 `POST /api/audit/list` | 过滤 + 分页：`status/providerId/modelId/requestId/profileId/from/to/failuresOnly/search/limit/offset` |
+| `usage:audit-detail` | `GET /api/audit/requests/:requestId` | 单请求的审计行 + 有序决策轨迹 |
+| `usage:audit-summary` | `GET /api/audit/summary?days=7` | 成功率、P50/P95、首字节均值、Top 错误、按服务商与按天分布 |
+
+网关响应头 `X-Request-Id` 与审计主键一致；若客户端自带合法的 `X-Request-Id`（≤64 字符，
+仅 `[A-Za-z0-9_.:-]`）会被复用，否则由服务端生成，畸形值一律丢弃重写。
+
+## OAuth
+
+| IPC 通道 | Web REST | 说明 |
+| --- | --- | --- |
+| `providers:configure-oauth` | `POST /api/providers/:id/oauth` | 写入授权/令牌端点、Client ID、scopes、可选 Client Secret |
+| `oauth:start` | `POST /api/oauth/:providerId/authorize` | 发起授权码 + PKCE，返回授权 URL 并尝试打开浏览器 |
+| `oauth:status` | `GET /api/oauth/flows/:state` | 流程状态 + 当前令牌快照（不含令牌值） |
+| `oauth:cancel` | `POST /api/oauth/flows/:state/cancel` | 取消并关闭回调端口 |
+| `oauth:refresh` | `POST /api/oauth/:providerId/refresh` | 立即刷新一次 |
+| `oauth:unlink` | `DELETE /api/oauth/:providerId` | 清除令牌与 Client Secret |

@@ -79,3 +79,22 @@ allowRunningInsecureContent: false
 - 不同服务商凭证独立存储
 - 删除服务商不影响其他凭证
 - 应用退出时自动清理内存中的敏感数据
+
+## OAuth 令牌托管
+
+- 访问令牌与刷新令牌作为一个整体（JSON 包）经 `safeStorage` / AES-256-GCM 加密后写入 `credentials` 表，
+  拆散存放会让"有刷新令牌却没有访问令牌"这类半更新状态成为可能。
+- 到期时间、scope、是否可刷新、状态（`active/refreshing/expired/revoked/error`）以**明文元数据列**保存，
+  界面据此显示"X 分钟后过期"而无需解密令牌。
+- 刷新是单飞（in-flight 合并）的：并发到期只会打一次令牌端点；瞬时失败（5xx、网络）保留仍然有效的旧令牌，
+  `invalid_grant` 才判定为撤销并停止使用。
+- 回调服务只监听 `127.0.0.1` 的一次性随机端口，校验 `state` 后才交换授权码，完成或超时即关闭。
+- Client Secret 与令牌分开存储；公开客户端可以只提供 Client ID + PKCE。
+- 令牌值永不出现在 IPC 返回值、审计表或日志中——界面只拿到 `OAuthCredentialState` 快照。
+
+## 请求审计中的数据最小化
+
+- 审计只记录请求参数指纹（消息条数、`max_tokens`、`temperature`、是否带 tools/response_format），
+  **不记录消息正文**，也不记录模型输出内容。
+- 错误文本入库前统一过 `redactSecrets`，`Authorization: Bearer ...` 会被替换成掩码。
+- 审计与调用日志共用同一保留策略（`log_retention_days`），过期后连同决策事件一起删除。

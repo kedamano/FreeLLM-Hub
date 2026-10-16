@@ -101,3 +101,26 @@
 | TIMEOUT | 504 | 上游超时 |
 | ALL_FAILED / CIRCUIT_OPEN | 503 | 无可用供应商，`Retry-After: 30` |
 | NETWORK_ERROR / SERVER_ERROR / 其他上游错误 | 502 | 上游故障 |
+
+## 配置档作用域
+
+每日配额、启用状态、Base URL 与服务商参数都按配置档读取（`profile:<id>:<key>`），
+非默认档未覆盖的项继承默认档的值。切换配置档时 `applyProfileToRuntime` 会：
+
+1. 用新档的键重放服务商覆盖（启用/停用、Base URL、参数）；
+2. 清空再按新档重建配额上限——新档没有配配额的服务商会被显式 `clearConfig`，避免沿用上一档的上限；
+3. 换绑 `quota_tracking` 的持久化作用域并重载该档的当日用量。
+
+密钥与熔断状态不参与切换：前者按服务商共享，后者按设计只活一个进程周期。
+
+## 调度轨迹（SchedulerTrace）
+
+`execute` / `executeStream` / `selectModel` 接受可选的 `trace` 回调，把决策过程交出来：
+
+- `candidate.skipped` + 原因（`disabled` / `circuit_open` / `rate_limited` / `quota_exceeded` / `no_adapter` / `rate_limit_slot_taken`）
+- `candidate.selected` + 评分
+- `attempt.start` / `attempt.success` / `attempt.failed`（含是否还会重试）
+- 流式的 `stream.started` / `stream.first_token` / `stream.failed`
+
+网关用它写 `request_audit_events`。回调缺席时调度行为完全不变；回调抛错会被吞掉——
+审计永远不能影响路由结果。
