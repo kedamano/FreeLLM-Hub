@@ -1,7 +1,9 @@
 import type { Scheduler } from '../../scheduler/scheduler.js';
 import type { ModelCapabilities, ModelPricing, ProviderModel } from '../../shared/types/index.js';
 import { getProviderRegistry } from '../../core/providers/index.js';
-import { applyEnabled, applyCredential, hotSwap, ENABLED_KEY_PREFIX, makeCustomProviderId } from '../../core/providers/bootstrap.js';
+import { applyEnabled, applyCredential, hotSwap, ENABLED_KEY_PREFIX, makeCustomProviderId, settingsBackedStore } from '../../core/providers/bootstrap.js';
+import { updateProviderConfig, persistProviderConfig } from '../../core/providers/provider-state.js';
+import type { ProviderConfig } from '../../shared/types/index.js';
 import { OpenAICompatibleAdapter } from '../../core/providers/openai-compatible/adapter.js';
 import { getCredentialStore } from '../security/credential-store.js';
 import { redactSecrets } from '../security/secret-redaction.js';
@@ -109,6 +111,10 @@ export function listProviders(scheduler: Scheduler) {
       isEnabled: config.isEnabled,
       isBuiltIn: config.isBuiltIn,
       credentialStatus: config.credentialStatus,
+      configFields: config.configFields ?? [],
+      settings: config.settings ?? {},
+      baseUrlDerived:
+        typeof (adapter as unknown as { resolveBaseUrl?: unknown }).resolveBaseUrl === 'function',
       metadata: config.metadata,
       hasCredential: listCredentialKeys(config.id).length > 0,
     };
@@ -193,11 +199,9 @@ export function updateProviderBaseUrl(
 ): { success: boolean; error?: string } {
   const adapter = getProviderRegistry().get(providerId);
   if (!adapter) return { success: false, error: 'Provider not found' };
-  if (typeof baseUrl !== 'string' || !/^https?:\/\/[^\s]+$/i.test(baseUrl)) {
-    return { success: false, error: 'Invalid base URL' };
-  }
-  const api = hotSwap(adapter);
-  if (typeof api.updateBaseUrl === 'function') api.updateBaseUrl(baseUrl);
+  const result = updateProviderConfig(adapter, { baseUrl });
+  if (!result.ok) return { success: false, error: result.error };
+  persistProviderConfig(settingsBackedStore, providerId, result);
   if (!adapter.getProviderConfig().isBuiltIn) {
     try {
       getDatabase()
@@ -208,6 +212,18 @@ export function updateProviderBaseUrl(
     }
   }
   return { success: true };
+}
+
+export function saveProviderConfig(
+  providerId: string,
+  input: { baseUrl?: unknown; settings?: unknown }
+): { success: boolean; error?: string; config?: ProviderConfig } {
+  const adapter = getProviderRegistry().get(providerId);
+  if (!adapter) return { success: false, error: 'Provider not found' };
+  const result = updateProviderConfig(adapter, input);
+  if (!result.ok) return { success: false, error: result.error };
+  persistProviderConfig(settingsBackedStore, providerId, result);
+  return { success: true, config: adapter.getProviderConfig() };
 }
 
 export function createCustomProvider(input: {

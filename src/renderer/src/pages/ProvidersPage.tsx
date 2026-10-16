@@ -1,8 +1,18 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import { getFreellmApi } from '../hooks/useIPC';
-import { LoadingState } from '../components/ErrorBoundary';
+import { assertOk, unwrapOrThrow } from '../lib/ipc-result';
+import { LoadingState, ErrorState } from '../components/ErrorBoundary';
 
 // ─── Types ───────────────────────────────────────────────────────────
+
+interface ProviderConfigFieldInfo {
+  key: string;
+  label: string;
+  type?: string;
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+}
 
 interface ProviderInfo {
   id: string;
@@ -13,6 +23,9 @@ interface ProviderInfo {
   isBuiltIn: boolean;
   credentialStatus: string;
   hasCredential: boolean;
+  configFields?: ProviderConfigFieldInfo[];
+  settings?: Record<string, unknown>;
+  baseUrlDerived?: boolean;
   metadata?: { description?: string };
 }
 
@@ -197,8 +210,7 @@ function getMockProviders(): ProviderInfo[] {
   ];
 }
 
-function getGroup(p: ProviderInfo): ProviderGroup {
-  if (LOCAL_IDS.includes(p.id)) return 'local';
+function getGroup(p: ProviderInfo): ProviderGroup {  if (LOCAL_IDS.includes(p.id)) return 'local';
   if (p.isBuiltIn) return 'cloud';
   return 'custom';
 }
@@ -208,6 +220,7 @@ function getGroup(p: ProviderInfo): ProviderGroup {
 export default function ProvidersPage() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<ProviderGroup>('local');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -217,6 +230,9 @@ export default function ProvidersPage() {
   const [showKey, setShowKey] = useState(false);
   const [keyIsMasked, setKeyIsMasked] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Provider-specific non-secret config fields (e.g. Cloudflare accountId)
+  const [extraSettings, setExtraSettings] = useState<Record<string, string>>({});
 
   // Multi-key state
   const [savedKeys, setSavedKeys] = useState<CredentialSlot[]>([]);
@@ -271,13 +287,17 @@ export default function ProvidersPage() {
     };
     try {
       const api = getFreellmApi();
-      if (!api) {
+      if (!api) throw new Error('未连接后端服务');
+      apply(unwrapOrThrow<ProviderInfo[]>(await api.providers.list(), '供应商列表加载失败'));
+      setLoadError(null);
+    } catch (err) {
+      if (import.meta.env.DEV) {
         apply(getMockProviders());
+        setLoadError(null);
       } else {
-        apply(((await api.providers.list()) || []) as ProviderInfo[]);
+        setProviders([]);
+        setLoadError(err instanceof Error ? err.message : '供应商列表加载失败');
       }
-    } catch {
-      apply(getMockProviders());
     }
     setLoading(false);
   }, []);
@@ -302,6 +322,13 @@ export default function ProvidersPage() {
       setDiscoverError(null);
       setRevealedKeys({});
       setBackupInput('');
+      const extras: Record<string, string> = {};
+      for (const field of p.configFields ?? []) {
+        if (field.key === 'baseUrl') continue;
+        const stored = p.settings?.[field.key];
+        extras[field.key] = typeof stored === 'string' ? stored : '';
+      }
+      setExtraSettings(extras);
     }
   }, [selectedId, providers]);
 
@@ -398,12 +425,14 @@ export default function ProvidersPage() {
     if (!api) return;
     setSaving(true);
     try {
-      await api.providers.setCredential(selectedId, apiKey);
+      const res = await api.providers.setCredential(selectedId, apiKey);
+      assertOk(res, '保存失败');
       setKeyIsMasked(false);
       await handleDiscover();
       await loadProviders();
-    } catch {
-      showToast('error', '保存失败');
+      showToast('success', 'API Key 已保存');
+    } catch (err) {
+      showToast('error', err instanceof Error ? err.message : '保存失败');
     }
     setSaving(false);
   }, [selectedId, apiKey, handleDiscover, loadProviders, showToast, requireApi]);
@@ -440,14 +469,15 @@ export default function ProvidersPage() {
     const api = requireApi();
     if (!api) return;
     try {
-      await api.providers.removeCredential(selectedId);
+      const res = await api.providers.removeCredential(selectedId);
+      assertOk(res, '清除凭证失败');
       setApiKey('');
       setKeyIsMasked(false);
       setShowKey(false);
       setDiscoveredModels([]);
       await loadProviders();
-    } catch {
-      showToast('error', '清除凭证失败');
+    } catch (err) {
+      showToast('error', err instanceof Error ? err.message : '清除凭证失败');
     }
   }, [selectedId, loadProviders, showToast, requireApi]);
 
@@ -526,14 +556,36 @@ export default function ProvidersPage() {
     if (!api) return;
     setSaving(true);
     try {
-      await api.providers.updateBaseUrl(selectedId, baseUrl);
+      const res = await api.providers.updateBaseUrl(selectedId, baseUrl);
+      assertOk(res, 'Base URL 更新失败');
       await loadProviders();
       showToast('success', 'Base URL 已更新');
-    } catch {
-      showToast('error', 'Base URL 更新失败');
+    } catch (err) {
+      showToast('error', err instanceof Error ? err.message : 'Base URL 更新失败');
     }
     setSaving(false);
   }, [selectedId, baseUrl, loadProviders, showToast, requireApi]);
+
+  const handleSaveExtraSettings = useCallback(async () => {
+    if (!selectedId) return;
+    const api = requireApi();
+    if (!api) return;
+    setSaving(true);
+    try {
+      const res = await api.providers.updateConfig(selectedId, { settings: extraSettings });
+      assertOk(res, '配置保存失败');
+      await loadProviders();
+      showToast('success', '配置已保存');
+      await handleDiscover();
+    } catch (err) {
+      showToast('error', err instanceof Error ? err.message : '配置保存失败');
+    }
+    setSaving(false);
+  }, [selectedId, extraSettings, loadProviders, showToast, requireApi, handleDiscover]);
+
+  const handleExtraSettingsChange = useCallback((key: string, value: string) => {
+    setExtraSettings((prev) => ({ ...prev, [key]: value }));
+  }, []);
 
   const handleTest = useCallback(async () => {
     if (!selectedId) return;
@@ -558,10 +610,11 @@ export default function ProvidersPage() {
       const api = requireApi();
       if (!api) return;
       try {
-        await api.providers.toggle(selectedId, enabled);
+        const res = await api.providers.toggle(selectedId, enabled);
+        assertOk(res, '切换启用状态失败');
         await loadProviders();
-      } catch {
-        showToast('error', '切换启用状态失败');
+      } catch (err) {
+        showToast('error', err instanceof Error ? err.message : '切换启用状态失败');
       }
     },
     [selectedId, loadProviders, showToast, requireApi]
@@ -639,6 +692,10 @@ export default function ProvidersPage() {
     return <LoadingState />;
   }
 
+  if (loadError) {
+    return <ErrorState message={loadError} onRetry={loadProviders} />;
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -661,9 +718,9 @@ export default function ProvidersPage() {
       )}
 
       {/* Split layout */}
-      <div className="flex flex-1 min-h-0 bg-white rounded-card border border-surface-100 shadow-card overflow-hidden">
+      <div className="flex flex-col lg:flex-row flex-1 min-h-0 bg-white rounded-card border border-surface-100 shadow-card overflow-hidden">
         {/* Left sidebar: groups + provider list */}
-        <aside className="w-72 border-r border-surface-100 flex flex-col bg-surface-50/30 min-h-0">
+        <aside className="w-full lg:w-60 xl:w-72 shrink-0 border-b lg:border-b-0 lg:border-r border-surface-100 flex flex-col min-h-0 max-h-64 lg:max-h-none bg-surface-50/30">
           <div ref={providerListRef} className="flex-1 min-h-0 overflow-y-auto">
           {groupedProviders.map((group) => (
             <div key={group.key} className="pt-3">
@@ -741,7 +798,7 @@ export default function ProvidersPage() {
         </aside>
 
         {/* Right panel: configuration */}
-        <section className="flex-1 overflow-y-auto p-6 bg-surface-50/20">
+        <section className="flex-1 min-w-0 overflow-y-auto p-4 lg:p-6 bg-surface-50/20">
           {selectedProvider ? (
             <ConfigPanel
               provider={selectedProvider}
@@ -763,6 +820,9 @@ export default function ProvidersPage() {
               onRemoveKeySlot={handleRemoveKeySlot}
               onRevealKey={handleRevealKey}
               onUpdateBaseUrl={handleUpdateBaseUrl}
+              extraSettings={extraSettings}
+              onExtraSettingsChange={handleExtraSettingsChange}
+              onSaveExtraSettings={handleSaveExtraSettings}
               onTest={handleTest}
               onToggle={handleToggle}
               onDeleteCustom={selectedProvider && !selectedProvider.isBuiltIn ? handleDeleteCustom : undefined}
@@ -858,6 +918,9 @@ interface ConfigPanelProps {
   onRemoveKeySlot: (index: number) => void;
   onRevealKey: (index: number) => void;
   onUpdateBaseUrl: () => Promise<void>;
+  extraSettings: Record<string, string>;
+  onExtraSettingsChange: (key: string, value: string) => void;
+  onSaveExtraSettings: () => Promise<void>;
   onTest: () => Promise<void>;
   onToggle: (enabled: boolean) => Promise<void>;
   onDeleteCustom?: () => Promise<void>;
@@ -888,6 +951,9 @@ const ConfigPanel = memo(function ConfigPanel({
   onRemoveKeySlot,
   onRevealKey,
   onUpdateBaseUrl,
+  extraSettings,
+  onExtraSettingsChange,
+  onSaveExtraSettings,
   onTest,
   onToggle,
   onDeleteCustom,
@@ -897,19 +963,20 @@ const ConfigPanel = memo(function ConfigPanel({
   onDiscover,
 }: ConfigPanelProps) {
   const showCredSection = provider.authType !== 'none';
+  const extraFields = (provider.configFields ?? []).filter((f) => f.key !== 'baseUrl');
 
   return (
-    <div className="max-w-2xl">
+    <div className="w-full max-w-3xl">
       {/* Provider header */}
-      <div className="flex items-start justify-between mb-6">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-y-2 mb-6">
+        <div className="min-w-0 flex-1">
           <h3 className="text-lg font-bold text-surface-900 tracking-tight">{provider.displayName}</h3>
           {provider.metadata?.description && (
             <p className="text-sm text-surface-500 mt-1">{provider.metadata.description}</p>
           )}
         </div>
         <div className="flex items-center gap-3 shrink-0 ml-4">
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className="flex items-center gap-2 cursor-pointer whitespace-nowrap">
             <span className="text-xs text-surface-500">{provider.isEnabled ? '已启用' : '已禁用'}</span>
             <input
               type="checkbox"
@@ -929,23 +996,65 @@ const ConfigPanel = memo(function ConfigPanel({
       {/* Base URL */}
       <div className="mb-4">
         <label className="label text-surface-600">Base URL</label>
-        <div className="flex gap-2">
-          <input
-            type="url"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.example.com/v1"
-            className="input-field flex-1 font-mono text-xs"
-          />
-          <button
-            onClick={onUpdateBaseUrl}
-            disabled={saving}
-            className="btn-secondary text-xs shrink-0"
-          >
-            更新
-          </button>
-        </div>
+        {provider.baseUrlDerived ? (
+          <div className="input-field text-sm bg-surface-50 text-surface-600 flex items-center justify-between">
+            <span className="font-mono text-xs truncate">{baseUrl}</span>
+            <span className="text-[10px] text-surface-400 shrink-0 ml-2">由服务参数自动生成</span>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <input
+              type="url"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.example.com/v1"
+              className="input-field flex-1 min-w-0 font-mono text-xs"
+            />
+            <button
+              onClick={onUpdateBaseUrl}
+              disabled={saving}
+              className="btn-secondary text-xs shrink-0"
+            >
+              更新
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* Provider-specific config fields (e.g. Cloudflare accountId) */}
+      {extraFields.length > 0 && (
+        <div className="mb-4">
+          <label className="label text-surface-600">服务参数</label>
+          <div className="space-y-3">
+            {extraFields.map((field) => (
+              <div key={field.key}>
+                <div className="flex gap-2">
+                  <input
+                    type={field.type === 'url' ? 'url' : 'text'}
+                    value={extraSettings[field.key] ?? ''}
+                    onChange={(e) => onExtraSettingsChange(field.key, e.target.value)}
+                    placeholder={field.placeholder}
+                    className="input-field flex-1 min-w-0 font-mono text-xs"
+                    aria-label={field.label}
+                  />
+                  <button
+                    onClick={onSaveExtraSettings}
+                    disabled={saving}
+                    className="btn-secondary text-xs shrink-0"
+                  >
+                    保存参数
+                  </button>
+                </div>
+                <p className="text-[11px] text-surface-400 mt-1">
+                  {field.label}
+                  {field.required ? '（必填）' : ''}
+                  {field.help ? ` · ${field.help}` : ''}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* API Format: fixed per provider, shown read-only */}
       <div className="mb-4">
@@ -961,7 +1070,7 @@ const ConfigPanel = memo(function ConfigPanel({
         <div className="mb-5">
           <label className="label">{provider.authType === 'oauth' ? 'OAuth Token' : 'API Key'}</label>
           <div className="flex gap-2">
-            <div className="relative flex-1">
+            <div className="relative flex-1 min-w-0">
               <input
                 type={showKey ? 'text' : 'password'}
                 value={apiKey}
@@ -1031,7 +1140,7 @@ const ConfigPanel = memo(function ConfigPanel({
               value={backupInput}
               onChange={(e) => onBackupInputChange(e.target.value)}
               placeholder="添加备用 Key（可选）"
-              className="input-field flex-1 font-mono text-xs"
+              className="input-field flex-1 min-w-0 font-mono text-xs"
             />
             <button
               onClick={onAddBackup}

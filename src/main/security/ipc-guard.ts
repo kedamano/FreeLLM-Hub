@@ -1,42 +1,7 @@
 import type { IpcMainInvokeEvent } from 'electron';
+import { IPC_CHANNELS } from '../../shared/ipc-channels.js';
 
-const ALLOWED_CHANNELS = new Set<string>([
-  'providers:list',
-  'providers:get',
-  'providers:test',
-  'providers:set-credential',
-  'providers:get-credential',
-  'providers:list-credentials',
-  'providers:add-credential',
-  'providers:remove-credential-slot',
-  'providers:remove-credential',
-  'providers:toggle',
-  'providers:update-baseurl',
-  'providers:discover-models',
-  'providers:get-models',
-  'providers:create-custom',
-  'providers:delete-custom',
-  'models:list',
-  'models:get',
-  'models:discover',
-  'models:refresh',
-  'scheduler:status',
-  'scheduler:reset-circuit',
-  'scheduler:reset-all-circuits',
-  'settings:get',
-  'settings:set',
-  'settings:get-all',
-  'usage:dashboard',
-  'usage:provider-stats',
-  'usage:daily-stats',
-  'usage:recent-calls',
-  'gateway:getStatus',
-  'gateway:getToken',
-  'gateway:generateToken',
-  'gateway:updateConfig',
-  'app:version',
-  'app:data-path',
-]);
+const ALLOWED_CHANNELS = new Set<string>(IPC_CHANNELS);
 
 export type IpcHandler = (event: IpcMainInvokeEvent, ...args: any[]) => Promise<unknown>;
 

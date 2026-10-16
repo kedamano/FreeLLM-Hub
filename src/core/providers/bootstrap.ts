@@ -21,6 +21,24 @@ import {
   createMiniMaxAdapter,
 } from './index.js';
 import type { ProviderAdapter, ProviderRegistry } from './contracts.js';
+import {
+  resolveProviderCredential,
+  credentialKeyFor,
+  type SecretKeyStore,
+} from './credential-keys.js';
+import {
+  migrateLegacyProviderFields,
+  applyProviderOverrides,
+  PROVIDER_ENABLED_PREFIX,
+  type PlainKeyStore,
+} from './provider-state.js';
+import { deleteSetting, readSetting, writeSetting } from '../settings/settings-store.js';
+
+export const settingsBackedStore: PlainKeyStore = {
+  get: readSetting,
+  set: writeSetting,
+  delete: deleteSetting,
+};
 
 interface ReadCredentialStore {
   retrieve(id: string): string | null;
@@ -51,90 +69,101 @@ export function applyCredential(adapter: ProviderAdapter, credential: string | u
   if (typeof api.setCredential === 'function') api.setCredential(credential, credentialId);
 }
 
-export const ENABLED_KEY_PREFIX = 'provider-enabled:';
+export const ENABLED_KEY_PREFIX = PROVIDER_ENABLED_PREFIX;
 
 export function collectSlotCredentials(store: ReadCredentialStore, providerId: string): string[] {
   const values: string[] = [];
-  const primary = store.retrieve(`${providerId}-key`);
+  const primary = store.retrieve(credentialKeyFor(providerId));
   if (primary) values.push(primary);
   for (let i = 2; ; i++) {
-    const extra = store.retrieve(`${providerId}-key-${i}`);
+    const extra = store.retrieve(`${credentialKeyFor(providerId)}-${i}`);
     if (!extra) break;
     values.push(extra);
   }
   return values;
 }
 
-export function registerAllProviders(registry: ProviderRegistry, credentialStore: ReadCredentialStore): void {
-  const ollamaKey = 'ollama-config';
-  let ollamaBaseUrl = 'http://localhost:11434';
-  const ollamaConfig = credentialStore.retrieve(ollamaKey);
-  if (ollamaConfig) {
+type BuiltInFactory = (credential?: string) => ProviderAdapter;
+
+const BUILT_IN_FACTORIES: Record<string, BuiltInFactory> = {
+  ollama: () => createOllamaAdapter(),
+  lmstudio: () => createLMStudioAdapter(),
+  groq: (key) => createGroqAdapter(key),
+  'google-gemini': (key) => createGoogleGeminiAdapter(key),
+  cloudflare: (key) => createCloudflareAdapter(undefined, key),
+  huggingface: (key) => createHuggingFaceAdapter(key),
+  cerebras: (key) => createCerebrasAdapter(key),
+  siliconflow: (key) => createSiliconFlowAdapter(key),
+  nvidia: (key) => createNvidiaAdapter(key),
+  openrouter: (key) => createOpenRouterAdapter(key),
+  modelscope: (key) => createModelScopeAdapter(key),
+  sensenova: (key) => createSenseNovaAdapter(key),
+  longcat: (key) => createLongCatAdapter(key),
+  zhipu: (key) => createZhipuAdapter(key),
+  moonshot: (key) => createMoonshotAdapter(key),
+  deepseek: (key) => createDeepSeekAdapter(key),
+  minimax: (key) => createMiniMaxAdapter(key),
+};
+
+export interface RegisterAllProvidersOptions {
+  settings?: PlainKeyStore;
+  secrets?: SecretKeyStore;
+}
+
+export function registerAllProviders(
+  registry: ProviderRegistry,
+  credentialStore: ReadCredentialStore,
+  options: RegisterAllProvidersOptions = {}
+): void {
+  const secrets: SecretKeyStore = options.secrets ?? {
+    retrieve: (id) => credentialStore.retrieve(id),
+    store: (id, value) => {
+      const writable = credentialStore as ReadCredentialStore & {
+        store?: (id: string, value: string) => void;
+      };
+      writable.store?.(id, value);
+    },
+    delete: (id) => {
+      const writable = credentialStore as ReadCredentialStore & {
+        delete?: (id: string) => boolean;
+      };
+      return writable.delete?.(id) ?? false;
+    },
+  };
+
+  const adapters: ProviderAdapter[] = [];
+
+  for (const [providerId, factory] of Object.entries(BUILT_IN_FACTORIES)) {
+    let credential: string | undefined;
     try {
-      const parsed = JSON.parse(ollamaConfig);
-      if (parsed.baseUrl) ollamaBaseUrl = parsed.baseUrl;
-    } catch {
-      console.warn('[Bootstrap] Invalid ollama config in credential store');
+      credential = resolveProviderCredential(secrets, providerId).credential ?? undefined;
+    } catch (err) {
+      console.warn(
+        `[Bootstrap] ${providerId}: 凭证读取失败 (${err instanceof Error ? err.message : String(err)})`
+      );
     }
+    const adapter = factory(credential);
+    adapters.push(adapter);
+    registry.register(adapter);
   }
 
-  registry.register(createOllamaAdapter({ baseUrl: ollamaBaseUrl }));
-  registry.register(createLMStudioAdapter());
-
-  const groqKey = credentialStore.retrieve('groq-key');
-  registry.register(createGroqAdapter(groqKey || undefined));
-
-  const googleKey = credentialStore.retrieve('google-key');
-  registry.register(createGoogleGeminiAdapter(googleKey || undefined));
-
-  const cfToken = credentialStore.retrieve('cloudflare-token');
-  const cfAccount = credentialStore.retrieve('cloudflare-account');
-  registry.register(createCloudflareAdapter(cfAccount || undefined, cfToken || undefined));
-
-  const hfToken = credentialStore.retrieve('huggingface-token');
-  registry.register(createHuggingFaceAdapter(hfToken || undefined));
-
-  const cerebrasKey = credentialStore.retrieve('cerebras-key');
-  registry.register(createCerebrasAdapter(cerebrasKey || undefined));
-
-  const siliconflowKey = credentialStore.retrieve('siliconflow-key');
-  registry.register(createSiliconFlowAdapter(siliconflowKey || undefined));
-
-  const nvidiaKey = credentialStore.retrieve('nvidia-key');
-  registry.register(createNvidiaAdapter(nvidiaKey || undefined));
-
-  const openrouterKey = credentialStore.retrieve('openrouter-key');
-  registry.register(createOpenRouterAdapter(openrouterKey || undefined));
-
-  const modelscopeKey = credentialStore.retrieve('modelscope-key');
-  registry.register(createModelScopeAdapter(modelscopeKey || undefined));
-
-  const sensenovaKey = credentialStore.retrieve('sensenova-key');
-  registry.register(createSenseNovaAdapter(sensenovaKey || undefined));
-
-  const longcatKey = credentialStore.retrieve('longcat-key');
-  registry.register(createLongCatAdapter(longcatKey || undefined));
-
-  const zhipuKey = credentialStore.retrieve('zhipu-key');
-  registry.register(createZhipuAdapter(zhipuKey || undefined));
-
-  const moonshotKey = credentialStore.retrieve('moonshot-key');
-  registry.register(createMoonshotAdapter(moonshotKey || undefined));
-
-  const deepseekKey = credentialStore.retrieve('deepseek-key');
-  registry.register(createDeepSeekAdapter(deepseekKey || undefined));
-
-  const minimaxKey = credentialStore.retrieve('minimax-key');
-  registry.register(createMiniMaxAdapter(minimaxKey || undefined));
-
-  registerCustomProvidersFromDb(registry, credentialStore);
-
-  for (const adapter of registry.getAll()) {
+  for (const adapter of adapters) {
     const api = hotSwap(adapter);
     if (typeof api.setCredentials !== 'function') continue;
     const values = collectSlotCredentials(credentialStore, adapter.providerId);
     if (values.length > 1) api.setCredentials(values);
   }
+
+  registerCustomProvidersFromDb(registry, credentialStore);
+
+  const settings = options.settings ?? settingsBackedStore;
+  const migrated = migrateLegacyProviderFields(secrets, settings, Object.keys(BUILT_IN_FACTORIES));
+  if (migrated.length > 0) {
+    console.log(`[Bootstrap] 已迁移旧版配置字段: ${migrated.join(', ')}`);
+  }
+
+  const { errors } = applyProviderOverrides(adapters, settings);
+  for (const error of errors) console.warn(`[Bootstrap] ${error}`);
 
   console.log(`[Providers] Registered ${registry.getAll().length} providers`);
 }

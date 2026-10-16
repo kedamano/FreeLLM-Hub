@@ -33,6 +33,10 @@ interface Window {
         providerId: string,
         baseUrl: string
       ) => Promise<{ success: boolean; error?: string }>;
+      updateConfig: (
+        providerId: string,
+        input: { baseUrl?: string; settings?: Record<string, string> }
+      ) => Promise<{ success: boolean; error?: string }>;
       discoverModels: (providerId: string) => Promise<{
         success: boolean;
         models?: unknown[];

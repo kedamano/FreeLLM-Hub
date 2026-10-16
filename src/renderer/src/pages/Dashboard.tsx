@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { DashboardIcon, ProviderIcon, ModelIcon, ZapIcon, ServerIcon } from '../components/Icons';
 import { useIPC, getFreellmApi } from '../hooks/useIPC';
+import { unwrapIpc } from '../lib/ipc-result';
 import { LoadingState, ErrorState } from '../components/ErrorBoundary';
 
 interface DashboardData {
@@ -48,7 +49,7 @@ export default function Dashboard() {
   } = useIPC<DashboardData | null>(async () => {
     const api = getFreellmApi();
     if (!api) return null;
-    return (await api.usage.dashboard()) as DashboardData;
+    return unwrapIpc<DashboardData>(await api.usage.dashboard());
   });
 
   const {
@@ -59,7 +60,7 @@ export default function Dashboard() {
   } = useIPC<GatewayStatus | null>(async () => {
     const api = getFreellmApi();
     if (!api) return null;
-    return (await api.gateway.status()) as GatewayStatus;
+    return unwrapIpc<GatewayStatus>(await api.gateway.status());
   });
 
   const [copied, setCopied] = useState(false);
@@ -173,7 +174,7 @@ export default function Dashboard() {
             <div className="space-y-2.5">
               {/* URL */}
               <div className="flex items-center gap-2">
-                <div className="flex-1 px-3 py-2 bg-surface-50 rounded-lg font-mono text-xs text-surface-700 truncate border border-surface-100">
+                <div className="flex-1 min-w-0 px-3 py-2 bg-surface-50 rounded-lg font-mono text-xs text-surface-700 truncate border border-surface-100">
                   {gatewayUrl}
                 </div>
                 <button
@@ -201,7 +202,7 @@ export default function Dashboard() {
               {/* Quick config */}
               <div className="p-2.5 bg-primary-50/50 rounded-lg mt-2">
                 <div className="text-[10px] text-primary-600 font-medium mb-1">在 other agent 中配置</div>
-                <div className="font-mono text-[11px] text-primary-700 leading-relaxed">
+                <div className="font-mono text-[11px] text-primary-700 leading-relaxed break-all">
                   OPENAI_BASE_URL={gatewayUrl}/v1
                 </div>
               </div>

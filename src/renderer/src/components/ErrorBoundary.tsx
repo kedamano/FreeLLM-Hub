@@ -3,6 +3,8 @@ import React, { Component, type ReactNode } from 'react';
 interface Props {
   children: ReactNode;
   fallback?: ReactNode;
+  /** Change this to clear a latched error (e.g. the current page id). */
+  resetKey?: unknown;
 }
 
 interface State {
@@ -22,6 +24,12 @@ export class ErrorBoundary extends Component<Props, State> {
 
   override componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     console.error('ErrorBoundary caught:', error, errorInfo);
+  }
+
+  override componentDidUpdate(prevProps: Props): void {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false, error: null });
+    }
   }
 
   override render(): ReactNode {

@@ -36,6 +36,9 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
   registerIpcHandler('providers:update-baseurl', async (_e, providerId: string, baseUrl: string) =>
     providerService.updateProviderBaseUrl(providerId, baseUrl)
   );
+  registerIpcHandler('providers:update-config', async (_e, providerId: string, input) =>
+    providerService.saveProviderConfig(providerId, input)
+  );
   registerIpcHandler('providers:discover-models', async (_e, providerId: string) =>
     providerService.discoverProviderModels(providerId)
   );

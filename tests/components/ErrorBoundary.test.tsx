@@ -79,6 +79,30 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByTestId('recovery')).toHaveTextContent('Recovered');
   });
+
+  it('clears a latched error when resetKey changes', () => {
+    let shouldThrow = true;
+
+    function Page({ name }: { name: string }): JSX.Element {
+      if (shouldThrow) throw new Error('boom');
+      return <div data-testid="page">{name}</div>;
+    }
+
+    const { rerender } = render(
+      <ErrorBoundary resetKey="dashboard">
+        <Page name="dashboard" />
+      </ErrorBoundary>
+    );
+    expect(screen.getByText('出现了一些问题')).toBeInTheDocument();
+
+    shouldThrow = false;
+    rerender(
+      <ErrorBoundary resetKey="providers">
+        <Page name="providers" />
+      </ErrorBoundary>
+    );
+    expect(screen.getByTestId('page')).toHaveTextContent('providers');
+  });
 });
 
 describe('LoadingState', () => {

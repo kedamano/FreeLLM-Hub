@@ -38,8 +38,13 @@ export default function SettingsPage() {
   const { data: snapshot, refetch } = useIPC<GatewaySnapshot | null>(async () => {
     const api = getFreellmApi();
     if (!api) return null;
-    const status = (await api.gateway.status()) as GatewaySnapshot | null;
-    const token = await api.gateway.getToken().catch(() => '');
+    const status = (await api.gateway.status()) as (GatewaySnapshot | null) & {
+      success?: boolean;
+      error?: string;
+    };
+    if (!status || status.success === false) return null;
+    const rawToken = await api.gateway.getToken().catch(() => '');
+    const token = typeof rawToken === 'string' ? rawToken : '';
     if (!status) return null;
     return {
       host: status.host,
@@ -99,7 +104,7 @@ export default function SettingsPage() {
     if (!api) return;
     try {
       const token = await api.gateway.generateToken();
-      setGatewayToken(token);
+      if (typeof token === 'string' && token) setGatewayToken(token);
     } catch {
       // keep existing token
     }
@@ -157,7 +162,7 @@ export default function SettingsPage() {
           <div>
             <label className="label">网关地址</label>
             <div className="flex items-center gap-2">
-              <div className="flex-1 px-3 py-2 bg-surface-50 rounded-lg font-mono text-sm text-surface-700 border border-surface-100 select-all">
+              <div className="flex-1 min-w-0 px-3 py-2 bg-surface-50 rounded-lg font-mono text-sm text-surface-700 border border-surface-100 select-all truncate">
                 {gatewayUrl}
               </div>
               <button
@@ -206,7 +211,7 @@ export default function SettingsPage() {
             <div>
               <label className="label">访问 Token</label>
               <div className="flex items-center gap-2">
-                <div className="flex-1 px-3 py-2 bg-surface-50 rounded-lg font-mono text-sm text-surface-700 border border-surface-100 overflow-hidden">
+                <div className="flex-1 min-w-0 px-3 py-2 bg-surface-50 rounded-lg font-mono text-sm text-surface-700 border border-surface-100 overflow-hidden truncate">
                   {tokenVisible ? gatewayToken || '尚未生成' : '••••••••••••••••••••••••••••••••••'}
                 </div>
                 <button

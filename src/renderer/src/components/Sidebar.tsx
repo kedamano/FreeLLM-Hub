@@ -60,7 +60,7 @@ function Sidebar({ currentPage, onNavigate }: SidebarProps) {
     gatewayState === 'running' ? '运行中' : gatewayState === 'stopped' ? '已停止' : '状态未知';
 
   return (
-    <aside className="w-56 bg-white border-r border-surface-100 flex flex-col">
+    <aside className="w-56 shrink-0 bg-white border-r border-surface-100 flex flex-col">
       <div className="px-4 py-5 border-b border-surface-100">
         <h1 className="text-base font-bold text-surface-900 flex items-center gap-2.5 tracking-tight">
           <span className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center text-white text-[11px] font-bold shadow-sm">

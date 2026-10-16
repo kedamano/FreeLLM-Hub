@@ -10,10 +10,10 @@ export function createNvidiaAdapter(apiKey?: string): OpenAICompatibleAdapter {
     defaultHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     models: [
       {
-        id: 'deepseek-ai/deepseek-r1',
+        id: 'deepseek-ai/deepseek-v4.1-flash',
         providerId: 'nvidia',
-        displayName: 'DeepSeek R1',
-        description: 'DeepSeek R1 reasoning model on NVIDIA NIM',
+        displayName: 'DeepSeek V4.1 Flash',
+        description: 'DeepSeek V4.1 Flash on NVIDIA NIM',
         capabilities: {
           supported: ['chat', 'streaming'],
           contextWindow: 128000,
@@ -29,9 +29,9 @@ export function createNvidiaAdapter(apiKey?: string): OpenAICompatibleAdapter {
         discoveredAt: new Date().toISOString(),
       },
       {
-        id: 'meta/llama-3.3-70b-instruct',
+        id: 'nvidia/llama-3.1-nemotron-51b-instruct',
         providerId: 'nvidia',
-        displayName: 'Llama 3.3 70B Instruct',
+        displayName: 'Llama 3.1 Nemotron 51B Instruct',
         capabilities: {
           supported: ['chat', 'streaming', 'function-calling'],
           contextWindow: 131072,

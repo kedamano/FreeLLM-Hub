@@ -16,11 +16,12 @@ export default function App() {
     <div className="flex h-screen overflow-hidden bg-surface-50/50">
       <Sidebar currentPage={currentPage} onNavigate={setCurrentPage} />
 
-      <main className="flex-1 overflow-y-auto p-8">
+      <main className="flex-1 min-w-0 overflow-y-auto p-6 2xl:p-8">
         <ErrorBoundary
+          resetKey={currentPage}
           fallback={
             <div className="text-center py-12 text-surface-500">
-              页面加载出错，请刷新应用
+              页面加载出错，切换到其他页面即可重试
             </div>
           }
         >

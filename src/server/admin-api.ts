@@ -92,6 +92,15 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
     async (request) => providerService.updateProviderBaseUrl(request.params.id, request.body?.baseUrl ?? '')
   );
 
+  app.put<{ Params: { id: string }; Body: { baseUrl?: string; settings?: Record<string, string> } }>(
+    '/api/providers/:id/config',
+    async (request) =>
+      providerService.saveProviderConfig(request.params.id, {
+        baseUrl: request.body?.baseUrl,
+        settings: request.body?.settings,
+      })
+  );
+
   app.post<{ Params: { id: string } }>('/api/providers/:id/discover-models', async (request) =>
     providerService.discoverProviderModels(request.params.id)
   );

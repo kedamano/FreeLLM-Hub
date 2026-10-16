@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useIPC, getFreellmApi } from '../hooks/useIPC';
+import { unwrapIpcList } from '../lib/ipc-result';
 import { LoadingState, ErrorState, EmptyState } from '../components/ErrorBoundary';
 
 interface ModelCapability {
@@ -279,8 +280,8 @@ export default function ModelsPage() {
     refetch,
   } = useIPC<ModelInfo[]>(async () => {
     const api = getFreellmApi();
-    if (!api) return getMockModels();
-    return ((await api.models.list()) || []) as ModelInfo[];
+    if (!api) return import.meta.env.DEV ? getMockModels() : [];
+    return unwrapIpcList<ModelInfo>(await api.models.list());
   });
 
   const models = useMemo(() => modelsData ?? [], [modelsData]);
@@ -310,7 +311,7 @@ export default function ModelsPage() {
   }
 
   return (
-    <div className="flex flex-col h-full max-w-5xl">
+    <div className="flex flex-col h-full w-full max-w-5xl min-w-0">
       {/* Header */}
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex flex-col min-w-0">

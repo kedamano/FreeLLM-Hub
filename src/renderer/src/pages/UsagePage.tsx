@@ -1,4 +1,5 @@
 import { useIPC, getFreellmApi } from '../hooks/useIPC';
+import { unwrapIpc, unwrapIpcList } from '../lib/ipc-result';
 import { LoadingState, ErrorState, EmptyState } from '../components/ErrorBoundary';
 
 interface CallLogEntry {
@@ -34,8 +35,8 @@ export default function UsagePage() {
     refetch: refetchStats,
   } = useIPC<DashboardStats | null>(async () => {
     const api = getFreellmApi();
-    if (!api) return getMockStats();
-    return (await api.usage.dashboard()) as DashboardStats;
+    if (!api) return import.meta.env.DEV ? getMockStats() : null;
+    return unwrapIpc<DashboardStats>(await api.usage.dashboard());
   });
 
   const {
@@ -45,8 +46,8 @@ export default function UsagePage() {
     refetch: refetchCalls,
   } = useIPC<CallLogEntry[]>(async () => {
     const api = getFreellmApi();
-    if (!api) return getMockCalls();
-    return ((await api.usage.recentCalls(50)) || []) as CallLogEntry[];
+    if (!api) return import.meta.env.DEV ? getMockCalls() : [];
+    return unwrapIpcList<CallLogEntry>(await api.usage.recentCalls(50));
   });
 
   const calls = callsData ?? [];

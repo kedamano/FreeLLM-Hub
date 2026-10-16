@@ -76,6 +76,11 @@ function createHttpApi(): FreeLLMApi {
           method: 'PUT',
           body: JSON.stringify({ baseUrl }),
         }),
+      updateConfig: (providerId: string, input: { baseUrl?: string; settings?: Record<string, string> }) =>
+        http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/config`, {
+          method: 'PUT',
+          body: JSON.stringify(input),
+        }),
       discoverModels: (providerId: string) =>
         postJson<{ success: boolean; models?: unknown[]; error?: string }>(
           `/providers/${seg(providerId)}/discover-models`

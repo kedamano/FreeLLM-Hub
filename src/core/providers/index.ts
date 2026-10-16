@@ -27,7 +27,6 @@ export {
   type PlainKeyStore,
   type SecretKeyStore,
 } from './provider-state.js';
-export { bootstrapProviders, PROVIDER_FACTORIES, providerIds } from './provider-bootstrap.js';
 export { createGroqAdapter } from './groq/adapter.js';
 export { createGoogleGeminiAdapter } from './google-gemini/adapter.js';
 export { createCloudflareAdapter } from './cloudflare/adapter.js';
