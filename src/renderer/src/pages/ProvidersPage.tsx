@@ -297,9 +297,19 @@ export default function ProvidersPage() {
 
   //── Handlers ──────────────────────────────────────────────────────
 
-  const handleDiscover = useCallback(async () => {
+  const requireApi = useCallback(() => {
     const api = getFreellmApi();
-    if (!selectedId || !api) return;
+    if (!api) {
+      showToast('error', '浏览器预览模式无法调用桌面端接口，请在 FreeLLM Hub 应用窗口中操作');
+      return null;
+    }
+    return api;
+  }, [showToast]);
+
+  const handleDiscover = useCallback(async () => {
+    if (!selectedId) return;
+    const api = requireApi();
+    if (!api) return;
     setDiscovering(true);
     setDiscoverError(null);
     setDiscoveredModels([]);
@@ -318,11 +328,12 @@ export default function ProvidersPage() {
       setDiscoverError(err instanceof Error ? err.message : '模型发现失败，请检查网络连接。');
     }
     setDiscovering(false);
-  }, [selectedId]);
+  }, [selectedId, requireApi]);
 
   const handleSaveCredential = useCallback(async () => {
-    const api = getFreellmApi();
-    if (!selectedId || !api) return;
+    if (!selectedId) return;
+    const api = requireApi();
+    if (!api) return;
     setSaving(true);
     try {
       await api.providers.setCredential(selectedId, apiKey);
@@ -332,11 +343,12 @@ export default function ProvidersPage() {
       showToast('error', '保存失败');
     }
     setSaving(false);
-  }, [selectedId, apiKey, handleDiscover, loadProviders, showToast]);
+  }, [selectedId, apiKey, handleDiscover, loadProviders, showToast, requireApi]);
 
   const handleRemoveCredential = useCallback(async () => {
-    const api = getFreellmApi();
-    if (!selectedId || !api) return;
+    if (!selectedId) return;
+    const api = requireApi();
+    if (!api) return;
     try {
       await api.providers.removeCredential(selectedId);
       setApiKey('');
@@ -345,11 +357,12 @@ export default function ProvidersPage() {
     } catch {
       showToast('error', '清除凭证失败');
     }
-  }, [selectedId, loadProviders, showToast]);
+  }, [selectedId, loadProviders, showToast, requireApi]);
 
   const handleUpdateBaseUrl = useCallback(async () => {
-    const api = getFreellmApi();
-    if (!selectedId || !api) return;
+    if (!selectedId) return;
+    const api = requireApi();
+    if (!api) return;
     setSaving(true);
     try {
       await api.providers.updateBaseUrl(selectedId, baseUrl);
@@ -359,11 +372,12 @@ export default function ProvidersPage() {
       showToast('error', 'Base URL 更新失败');
     }
     setSaving(false);
-  }, [selectedId, baseUrl, loadProviders, showToast]);
+  }, [selectedId, baseUrl, loadProviders, showToast, requireApi]);
 
   const handleTest = useCallback(async () => {
-    const api = getFreellmApi();
-    if (!selectedId || !api) return;
+    if (!selectedId) return;
+    const api = requireApi();
+    if (!api) return;
     try {
       const result = await api.providers.test(selectedId);
       if (result.success) {
@@ -375,12 +389,13 @@ export default function ProvidersPage() {
     } catch {
       showToast('error', '测试失败');
     }
-  }, [selectedId, handleDiscover, showToast]);
+  }, [selectedId, handleDiscover, showToast, requireApi]);
 
   const handleToggle = useCallback(
     async (enabled: boolean) => {
-      const api = getFreellmApi();
-      if (!selectedId || !api) return;
+      if (!selectedId) return;
+      const api = requireApi();
+      if (!api) return;
       try {
         await api.providers.toggle(selectedId, enabled);
         await loadProviders();
@@ -388,7 +403,7 @@ export default function ProvidersPage() {
         showToast('error', '切换启用状态失败');
       }
     },
-    [selectedId, loadProviders, showToast]
+    [selectedId, loadProviders, showToast, requireApi]
   );
 
   //── Render ────────────────────────────────────────────────────────
