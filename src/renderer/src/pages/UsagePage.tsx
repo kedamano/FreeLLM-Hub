@@ -3,6 +3,7 @@ import { useIPC, getFreellmApi } from '../hooks/useIPC';
 import { useProfileChanges } from '../hooks/useProfiles';
 import { unwrapIpc, unwrapIpcList } from '../lib/ipc-result';
 import { LoadingState, ErrorState, EmptyState } from '../components/ErrorBoundary';
+import PageHeader from '../components/PageHeader';
 import {
   ProviderStackChart,
   QuotaCeilingList,
@@ -96,40 +97,40 @@ export default function UsagePage() {
   const calls = callsData ?? [];
   const topProviders = (cost?.byProvider ?? []).slice(0, 6).map((row) => row.providerId);
 
-  if (statsLoading) {
-    return <LoadingState />;
-  }
-
   if (statsError) {
     return <ErrorState message={`统计数据加载失败：${statsError}`} onRetry={refetchStats} />;
   }
 
   return (
     <div className="max-w-6xl">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-bold text-surface-900 tracking-tight">用量与成本</h2>
-          <p className="text-sm text-surface-500 mt-1">
-            免费池的额度消耗、折算成本与调用明细（数据范围：当前配置档）
-          </p>
-        </div>
-        <div className="flex items-center gap-1">
-          {WINDOWS.map((entry) => (
-            <button
-              key={entry.days}
-              type="button"
-              onClick={() => setDays(entry.days)}
-              className={`px-2.5 py-1 rounded-md text-xs font-medium ${
-                days === entry.days
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-white text-surface-500 border border-surface-100 hover:text-surface-700'
-              }`}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <PageHeader
+        title="用量与成本"
+        description="免费池的额度消耗、折算成本与调用明细（数据范围：当前配置档）"
+        actions={
+          <>
+            {WINDOWS.map((entry) => (
+              <button
+                key={entry.days}
+                type="button"
+                onClick={() => setDays(entry.days)}
+                aria-pressed={days === entry.days}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium ${
+                  days === entry.days
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-white text-surface-500 border border-surface-100 hover:text-surface-700'
+                }`}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </>
+        }
+      />
+
+      {statsLoading ? (
+        <LoadingState />
+      ) : (
+        <>
 
       {stats && (
         <div className="mb-4 text-[11px] text-surface-400">
@@ -285,6 +286,8 @@ export default function UsagePage() {
           ) : null}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

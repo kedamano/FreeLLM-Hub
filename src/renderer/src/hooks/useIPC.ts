@@ -168,7 +168,7 @@ function createHttpApi(): FreeLLMApi {
         http<ProviderQuotaUsage[]>(`/usage/quota?${qs({ profileId })}`),
       dailyByProvider: (days?: number, profileId?: string) =>
         http<ProviderDailyPoint[]>(`/usage/timeseries-by-provider?${qs({ days, profileId })}`),
-      auditList: (query?: AuditQuery) => http<AuditListResult>('/audit/requests', {
+      auditList: (query?: AuditQuery) => http<AuditListResult>('/audit/list', {
         method: 'POST',
         body: JSON.stringify(query ?? {}),
       }),

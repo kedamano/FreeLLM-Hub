@@ -35,6 +35,7 @@ desktop.ini
 # Test coverage
 coverage/
 playwright-report/
+test-results/
 
 # Temp
 tmp/

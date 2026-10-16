@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getFreellmApi } from '../hooks/useIPC';
 import { useProfileChanges } from '../hooks/useProfiles';
 import { ErrorState, LoadingState, EmptyState } from '../components/ErrorBoundary';
+import PageHeader from '../components/PageHeader';
 import { formatDuration, formatNumber, formatPercent, formatTimestamp, formatUsd } from '../lib/format';
 import type {
   AuditDetailResult,
@@ -148,21 +149,19 @@ export default function AuditPage() {
   const total = result?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-  if (loading && !result) return <LoadingState />;
-
   return (
     <div className="max-w-7xl">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-bold text-surface-900 tracking-tight">请求审计</h2>
-          <p className="text-sm text-surface-500 mt-1">
-            网关侧每个请求的完整轨迹：为什么选了这个服务商、重试了几次、被拒的原因
-          </p>
-        </div>
-        <button type="button" className="btn-secondary text-xs" onClick={() => void load()}>
-          刷新
-        </button>
-      </div>
+      <PageHeader
+        title="请求审计"
+        description="网关侧每个请求的完整轨迹：为什么选了这个服务商、重试了几次、被拒的原因"
+        actions={
+          <button type="button" className="btn-secondary text-xs" onClick={() => void load()}>
+            刷新
+          </button>
+        }
+      />
+
+      {loading && !result ? <LoadingState /> : (<>
 
       {summary && (
         <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-5">
@@ -339,6 +338,7 @@ export default function AuditPage() {
           {selected && detail && <AuditDetailPanel detail={detail} />}
         </div>
       </div>
+      </>)}
     </div>
   );
 }

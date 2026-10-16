@@ -48,7 +48,7 @@ export function getDashboardStats(profileId: string = getActiveProfileId()): Das
               COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0) as tokens,
               COALESCE(SUM(cost_usd), 0) as cost,
               COALESCE(SUM(saved_cost_usd), 0) as saved
-       FROM call_logs ${PROFILE_MATCH}`
+       FROM call_logs WHERE ${PROFILE_MATCH}`
     )
     .get(profileId) as {
     total: number;
@@ -67,7 +67,7 @@ export function getDashboardStats(profileId: string = getActiveProfileId()): Das
               AVG(duration_ms) as avg_duration,
               COALESCE(SUM(cost_usd), 0) as cost,
               COALESCE(SUM(saved_cost_usd), 0) as saved
-       FROM call_logs ${PROFILE_MATCH} GROUP BY provider_id`
+       FROM call_logs WHERE ${PROFILE_MATCH} GROUP BY provider_id`
     )
     .all(profileId) as Array<{
       provider_id: string;

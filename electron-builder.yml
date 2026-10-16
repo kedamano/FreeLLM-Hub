@@ -70,7 +70,10 @@ linux:
     - target: tar.gz
       arch: [x64]
   icon: resources/icons/linux
-  category: Development
+  # 桌面条目分类由 desktop 段给出；`category` 只存在于 mac/win 配置里。
+  desktop:
+    Type: Application
+    Categories: Development;Utility;
   executableName: freellm-hub
   maintainer: FreeLLM Hub Team
   synopsis: 本地优先的免费大模型聚合平台
@@ -80,13 +83,13 @@ linux:
     multi-key rotation and automatic failover.
   artifactName: ${productName}-${version}-${arch}.${ext}
 
-AppImage:
+appImage:
   artifactName: ${productName}-${version}-${arch}.AppImage
 
 deb:
   artifactName: ${productName}-${version}_${arch}.deb
 
-tar:
-  artifactName: ${productName}-${version}-${arch}-linux.${ext}
+# There is no `tar` configuration section in the electron-builder schema; the tar.gz
+# target inherits `linux.artifactName` set above.
 
 compression: maximum

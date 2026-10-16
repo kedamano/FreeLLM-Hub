@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useProfiles } from '../hooks/useProfiles';
 import { useIPC, getFreellmApi } from '../hooks/useIPC';
 import { ErrorState, LoadingState, EmptyState } from '../components/ErrorBoundary';
+import PageHeader from '../components/PageHeader';
 import { formatNumber, formatTokens, formatUsd } from '../lib/format';
 import type { ProfileView } from '../../../shared/types/observability.js';
 
@@ -29,8 +30,7 @@ export default function ProfilesPage() {
     return Array.isArray(list) ? list.length : 0;
   }, []);
 
-  if (loading && profiles.length === 0) return <LoadingState />;
-  if (error) return <ErrorState message={error} onRetry={() => void refresh()} />;
+  const bodyLoading = loading && profiles.length === 0;
 
   const submitCreate = async () => {
     if (!name.trim()) {
@@ -56,14 +56,20 @@ export default function ProfilesPage() {
 
   return (
     <div className="max-w-5xl">
-      <div className="mb-6">
-        <h2 className="text-xl font-bold text-surface-900 tracking-tight">配置档</h2>
-        <p className="text-sm text-surface-500 mt-1">
-          为不同项目准备不同的免费池：启用哪些服务商、各自的 Base URL/参数与每日额度。
-          密钥与模型目录全局共享，未覆盖的设置继承「默认配置档」。
-          {active ? `当前使用「${active.name}」。` : ''}
-        </p>
-      </div>
+      <PageHeader
+        title="配置档"
+        description={
+          active
+            ? `当前使用「${active.name}」。每个项目一份免费池：启用哪些服务商、各自的 Base URL/参数与每日额度；密钥与模型目录全局共享。`
+            : '为不同项目准备不同的免费池：启用哪些服务商、各自的 Base URL/参数与每日额度。密钥与模型目录全局共享，未覆盖的设置继承「默认配置档」。'
+        }
+      />
+
+      {error ? (
+        <ErrorState message={error} onRetry={() => void refresh()} />
+      ) : bodyLoading ? (
+        <LoadingState />
+      ) : (<>
 
       <div className="card mb-6">
         <h3 className="text-sm font-semibold text-surface-800 mb-3">新建配置档</h3>
@@ -161,6 +167,7 @@ export default function ProfilesPage() {
           <li>用量与审计面板会自动切到新配置档的数据范围；历史调用记录按配置档标记，不会互相污染。</li>
         </ul>
       </div>
+      </>)}
     </div>
   );
 }

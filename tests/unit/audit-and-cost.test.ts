@@ -22,7 +22,14 @@ import {
 import { MAX_AUDIT_PAGE_SIZE, normalizeAuditQuery } from '../../src/usage/audit-query';
 import { recordCall, queryCallLogs } from '../../src/usage/usage-recorder';
 import { createQuotaPersistence } from '../../src/usage/quota-store';
-import { getCostSummary, getDailyStatsByProvider, getProviderQuotaUsage } from '../../src/usage/statistics';
+import {
+  getCostSummary,
+  getDailyStatsByProvider,
+  getDashboardStats,
+  getProviderHealth,
+  getProviderStatistics,
+  getProviderQuotaUsage,
+} from '../../src/usage/statistics';
 import { purgeOldLogs, purgeAuditAndLogs } from '../../src/usage/log-retention';
 import { clearPricingCache } from '../../src/usage/cost-model';
 import { invalidateActiveProfileCache } from '../../src/core/settings/profile-store';
@@ -370,6 +377,37 @@ describe('cost ledger and quota ceilings', () => {
     const loaded = persistence.load();
     expect(loaded).toHaveLength(1);
     expect(loaded[0]).toMatchObject({ requestCount: 2, tokenCount: 20 });
+  });
+
+  it('aggregates the dashboard totals for the active profile', () => {
+    insertCall({ requestId: 'd1', promptTokens: 1000, completionTokens: 500 });
+    insertCall({ requestId: 'd2', status: 'error', promptTokens: 0, completionTokens: 0 });
+    insertCall({ requestId: 'd3', providerId: 'cerebras', profileId: 'work' });
+
+    const stats = getDashboardStats('default');
+    expect(stats.totalRequests).toBe(2);
+    expect(stats.successRate).toBeCloseTo(0.5, 6);
+    expect(stats.totalTokensUsed).toBe(1500);
+    expect(stats.totalCostUsd).toBe(0);
+    expect(stats.totalCostSaved).toBeGreaterThan(0);
+    expect(stats.availableModels).toBe(1);
+    expect(stats.providerStats).toHaveLength(1);
+    expect(stats.providerStats[0]).toMatchObject({
+      providerId: 'groq',
+      requestCount: 2,
+      successCount: 1,
+      errorCount: 1,
+    });
+    expect(stats.recentCalls).toHaveLength(2);
+    // Cross-profile traffic must not leak into the totals.
+    expect(getDashboardStats('work').totalRequests).toBe(1);
+
+    const single = getProviderStatistics('groq', 'default');
+    expect(single.requestCount).toBe(2);
+    expect(single.avgDurationMs).toBe(120);
+
+    const health = getProviderHealth(10, 'default');
+    expect(health[0]).toMatchObject({ providerId: 'groq', successRate: 0.5 });
   });
 
   it('supports paging through call logs scoped to a profile', () => {
