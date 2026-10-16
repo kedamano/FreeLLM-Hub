@@ -523,6 +523,11 @@ export default function ProvidersPage() {
     }
   }, [selectedId, loadProviders, showToast, requireApi]);
 
+  const providerListRef = useRef<HTMLDivElement | null>(null);
+  const scrollProviderList = useCallback((dir: 1 | -1) => {
+    providerListRef.current?.scrollBy({ top: dir * 240, behavior: 'smooth' });
+  }, []);
+
   //── Render ────────────────────────────────────────────────────────
 
   if (loading) {
@@ -553,7 +558,8 @@ export default function ProvidersPage() {
       {/* Split layout */}
       <div className="flex flex-1 min-h-0 bg-white rounded-card border border-surface-100 shadow-card overflow-hidden">
         {/* Left sidebar: groups + provider list */}
-        <aside className="w-72 border-r border-surface-100 flex flex-col bg-surface-50/30">
+        <aside className="w-72 border-r border-surface-100 flex flex-col bg-surface-50/30 min-h-0">
+          <div ref={providerListRef} className="flex-1 min-h-0 overflow-y-auto">
           {groupedProviders.map((group) => (
             <div key={group.key} className="pt-3">
               <button
@@ -599,7 +605,24 @@ export default function ProvidersPage() {
               )}
             </div>
           ))}
-          <div className="mt-auto p-3 border-t border-surface-100">
+          </div>
+          <div className="shrink-0 flex gap-2 px-3 pt-2">
+            <button
+              onClick={() => scrollProviderList(-1)}
+              aria-label="向上翻页"
+              className="flex-1 py-1.5 rounded-md border border-surface-200 bg-white text-[11px] text-surface-500 hover:text-primary-600 hover:border-primary-300 transition-colors"
+            >
+              ▲ 上翻
+            </button>
+            <button
+              onClick={() => scrollProviderList(1)}
+              aria-label="向下翻页"
+              className="flex-1 py-1.5 rounded-md border border-surface-200 bg-white text-[11px] text-surface-500 hover:text-primary-600 hover:border-primary-300 transition-colors"
+            >
+              ▼ 下翻
+            </button>
+          </div>
+          <div className="shrink-0 p-3 border-t border-surface-100">
             <button
               onClick={() => setShowAddForm(true)}
               className="w-full px-3 py-2 rounded-lg text-xs font-medium text-primary-600 bg-primary-50/60 hover:bg-primary-50 border border-primary-100 transition-colors"
@@ -795,13 +818,13 @@ const ConfigPanel = memo(function ConfigPanel({
         </div>
       </div>
 
-      {/* API Format (visual only for now) */}
+      {/* API Format: fixed per provider, shown read-only */}
       <div className="mb-4">
         <label className="label">API 格式</label>
-        <select className="input-field text-sm" defaultValue="openai">
-          <option value="openai">OpenAI Chat Completions (/v1/chat/completions)</option>
-          <option value="anthropic">Anthropic Messages (/v1/messages)</option>
-        </select>
+        <div className="input-field text-sm bg-surface-50 text-surface-600 flex items-center justify-between">
+          <span>OpenAI Chat Completions (/v1/chat/completions)</span>
+          <span className="text-[10px] text-surface-400 shrink-0 ml-2">由服务商决定</span>
+        </div>
       </div>
 
       {/* Credential */}
