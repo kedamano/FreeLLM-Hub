@@ -1,5 +1,33 @@
 export { getProviderRegistry } from './registry.js';
-export type { ProviderAdapter, ChatOptions, StreamChunk, ProviderUsageInfo } from './contracts.js';
+export type {
+  ProviderAdapter,
+  ChatOptions,
+  StreamChunk,
+  ProviderUsageInfo,
+  ProviderConfigField,
+  ProviderReadiness,
+} from './contracts.js';
+export {
+  credentialKeyFor,
+  credentialIdFor,
+  credentialKeyCandidates,
+  resolveProviderCredential,
+  LEGACY_CREDENTIAL_KEYS,
+  LEGACY_FIELD_MIGRATIONS,
+} from './credential-keys.js';
+export {
+  applyProviderOverrides,
+  updateProviderConfig,
+  persistProviderConfig,
+  readProviderOverride,
+  readProviderEnabled,
+  writeProviderEnabled,
+  migrateLegacyProviderFields,
+  isValidBaseUrl,
+  type PlainKeyStore,
+  type SecretKeyStore,
+} from './provider-state.js';
+export { bootstrapProviders, PROVIDER_FACTORIES, providerIds } from './provider-bootstrap.js';
 export { createGroqAdapter } from './groq/adapter.js';
 export { createGoogleGeminiAdapter } from './google-gemini/adapter.js';
 export { createCloudflareAdapter } from './cloudflare/adapter.js';

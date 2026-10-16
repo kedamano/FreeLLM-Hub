@@ -1,4 +1,5 @@
 import { OpenAICompatibleAdapter } from '../openai-compatible/adapter.js';
+import { credentialIdFor } from '../credential-keys.js';
 
 export function createGoogleGeminiAdapter(apiKey?: string): OpenAICompatibleAdapter {
   const baseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
@@ -8,7 +9,7 @@ export function createGoogleGeminiAdapter(apiKey?: string): OpenAICompatibleAdap
     providerName: 'Google Gemini',
     baseUrl,
     authType: 'api-key',
-    credentialId: apiKey ? 'google-key' : undefined,
+    credentialId: credentialIdFor('google-gemini', apiKey),
     defaultHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     models: [
       {

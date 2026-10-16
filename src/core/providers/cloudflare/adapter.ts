@@ -1,18 +1,36 @@
 import { OpenAICompatibleAdapter } from '../openai-compatible/adapter.js';
+import type { ProviderConfigField } from '../../../shared/types/index.js';
+import { credentialIdFor } from '../credential-keys.js';
+
+const CLOUDFLARE_ACCOUNT_FIELD: ProviderConfigField = {
+  key: 'accountId',
+  label: 'Cloudflare Account ID',
+  type: 'text',
+  required: true,
+  placeholder: 'Workers & Pages → 右上角账户 ID',
+  help: 'Workers AI 接口按账户寻址，未填写时无法请求（可在 Cloudflare 控制台账户详情页复制）',
+};
+
+function cloudflareBaseUrl(settings: Record<string, unknown>): string | null {
+  const accountId = typeof settings.accountId === 'string' ? settings.accountId.trim() : '';
+  if (!accountId) return null;
+  return `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
+}
 
 export function createCloudflareAdapter(accountId?: string, apiToken?: string): OpenAICompatibleAdapter {
-  const baseUrl = accountId
-    ? `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`
-    : 'https://api.cloudflare.com/client/v4/accounts/placeholder/ai/v1';
-
   return new OpenAICompatibleAdapter({
     providerId: 'cloudflare',
     providerName: 'Cloudflare Workers AI',
-    baseUrl,
+    // Deliberately templated: without an account id no request is issued at all
+    // (see OpenAICompatibleAdapter.checkReadiness / listModels gating).
+    baseUrl: 'https://api.cloudflare.com/client/v4/accounts',
     authType: 'api-key',
-    credentialId: apiToken ? 'cloudflare-token' : undefined,
+    credentialId: credentialIdFor('cloudflare', apiToken),
     defaultHeaders: apiToken ? { Authorization: `Bearer ${apiToken}` } : {},
-    settings: { accountId },
+    settings: accountId ? { accountId } : {},
+    requiredSettings: ['accountId'],
+    resolveBaseUrl: cloudflareBaseUrl,
+    configFields: [CLOUDFLARE_ACCOUNT_FIELD],
     models: [
       {
         id: '@cf/meta/llama-3.1-8b-instruct',

@@ -4,6 +4,7 @@ import type {
   GatewayMessage,
   GatewayUsage,
   ModelCapability,
+  ProviderReadiness,
 } from '../../shared/types/index.js';
 
 // Re-export shared types for adapter consumers
@@ -11,7 +12,9 @@ export type {
   GatewayRequest,
   ModelCapability,
   ProviderConfig,
+  ProviderConfigField,
   ProviderModel,
+  ProviderReadiness,
   GatewayMessage,
   GatewayUsage,
   GatewayToolCall,
@@ -60,6 +63,21 @@ export interface ProviderAdapter {
   validateCredential(credential?: string): Promise<{ valid: boolean; reason?: string }>;
 
   getUsageInfo?(): Promise<ProviderUsageInfo>;
+
+  /** Whether the provider can serve requests right now (key + required fields present). */
+  checkReadiness?(): ProviderReadiness;
+
+  /**
+   * Runtime reconfiguration hooks. Adapters that cannot honour one of these simply
+   * leave it undefined; the IPC layer reports a real error instead of a fake success.
+   */
+  setEnabled?(enabled: boolean): void;
+
+  updateBaseUrl?(baseUrl: string): void;
+
+  updateSettings?(settings: Record<string, unknown>): void;
+
+  setCredential?(credential: string | undefined, credentialId?: string): void;
 }
 
 export interface ChatOptions {

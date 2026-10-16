@@ -47,6 +47,27 @@ export interface ProviderModel {
   lastCheckedAt?: string;
 }
 
+export type ProviderConfigFieldType = 'url' | 'text' | 'password';
+
+/**
+ * A non-secret field the user may edit per provider. `key` is either the literal
+ * `'baseUrl'` (handled by `updateBaseUrl`) or a name inside provider settings.
+ */
+export interface ProviderConfigField {
+  key: string;
+  label: string;
+  type: ProviderConfigFieldType;
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+}
+
+export interface ProviderReadiness {
+  ready: boolean;
+  reason?: string;
+  missingFields?: string[];
+}
+
 export interface ProviderConfig {
   id: ProviderId;
   displayName: string;
@@ -58,6 +79,10 @@ export interface ProviderConfig {
   credentialStatus: 'unconfigured' | 'configured' | 'valid' | 'invalid' | 'expired';
   credentialId?: string;
   settings?: Record<string, unknown>;
+  /** Editable non-secret fields rendered by the provider page. */
+  configFields?: ProviderConfigField[];
+  /** False when the provider cannot serve requests yet (missing key or account id). */
+  readiness?: ProviderReadiness;
   metadata?: {
     icon?: string;
     docs?: string;

@@ -7,6 +7,6 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/main/**/*", "src/core/**/*", "src/shared/**/*", "src/usage/**/*", "src/scheduler/**/*", "src/preload/**/*"],
+  "include": ["src/main/**/*", "src/core/**/*", "src/shared/**/*", "src/usage/**/*", "src/scheduler/**/*", "src/preload/**/*", "src/server/**/*"],
   "exclude": ["node_modules", "dist", "tests", "src/renderer"]
 }

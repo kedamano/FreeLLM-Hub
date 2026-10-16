@@ -11,9 +11,105 @@ type IPCCall<T> = () => Promise<T>;
 
 export type FreeLLMApi = Window['freellm'];
 
+const API_BASE = '/api';
+
+async function http<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
+  });
+  if (!res.ok) {
+    let message = `请求失败 (HTTP ${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (typeof body?.error === 'string') message = body.error;
+    } catch {
+      // response body was not JSON, keep default message
+    }
+    throw new Error(message);
+  }
+  const text = await res.text();
+  return (text ? JSON.parse(text) : null) as T;
+}
+
+function postJson<T>(path: string, body?: unknown): Promise<T> {
+  return http<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) });
+}
+
+const seg = (value: string): string => encodeURIComponent(value);
+
+function createHttpApi(): FreeLLMApi {
+  return {
+    providers: {
+      list: () => http<unknown[]>('/providers'),
+      get: (providerId: string) => http<unknown>(`/providers/${seg(providerId)}`),
+      test: (providerId: string) =>
+        postJson<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/test`),
+      setCredential: (providerId: string, credential: string) =>
+        postJson<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { credential }),
+      removeCredential: (providerId: string) =>
+        http<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { method: 'DELETE' }),
+      toggle: (providerId: string, enabled: boolean) =>
+        postJson<{ success: boolean }>(`/providers/${seg(providerId)}/toggle`, { enabled }),
+      updateBaseUrl: (providerId: string, baseUrl: string) =>
+        http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/base-url`, {
+          method: 'PUT',
+          body: JSON.stringify({ baseUrl }),
+        }),
+      discoverModels: (providerId: string) =>
+        postJson<{ success: boolean; models?: unknown[]; error?: string }>(
+          `/providers/${seg(providerId)}/discover-models`
+        ),
+    },
+    models: {
+      list: () => http<unknown[]>('/models'),
+      get: (providerId: string, modelId: string) =>
+        http<unknown>(`/models/${seg(providerId)}/${seg(modelId)}`),
+      discover: () => postJson<unknown[]>('/models/discover'),
+      refresh: () => postJson<unknown[]>('/models/refresh'),
+    },
+    scheduler: {
+      status: () => http<unknown>('/scheduler/status'),
+      resetCircuit: (providerId: string) =>
+        postJson<{ success: boolean }>('/scheduler/reset-circuit', { providerId }),
+      resetAllCircuits: () => postJson<{ success: boolean }>('/scheduler/reset-all-circuits'),
+    },
+    settings: {
+      get: (key: string) => http<string | null>(`/settings/${seg(key)}`),
+      set: (key: string, value: string) =>
+        http<{ success: boolean }>(`/settings/${seg(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+      getAll: () => http<Record<string, string>>('/settings'),
+    },
+    usage: {
+      dashboard: () => http<unknown>('/usage/summary'),
+      providerStats: (providerId: string) => http<unknown>(`/usage/providers/${seg(providerId)}`),
+      dailyStats: (days?: number) =>
+        http<unknown>(`/usage/timeseries${days !== undefined ? `?days=${days}` : ''}`),
+      recentCalls: (limit?: number) =>
+        http<unknown[]>(`/usage/recent${limit !== undefined ? `?limit=${limit}` : ''}`),
+    },
+    gateway: {
+      status: () => http<unknown>('/gateway/status'),
+      getToken: () => http<string>('/gateway/token'),
+      generateToken: () => postJson<string>('/gateway/generate-token'),
+      updateConfig: (config: { host?: string; port?: number; authEnabled?: boolean }) =>
+        http<unknown>('/gateway/config', { method: 'PUT', body: JSON.stringify(config) }),
+    },
+    app: {
+      version: () => http<string>('/app/version'),
+      dataPath: () => http<string>('/app/data-path'),
+    },
+  };
+}
+
+let httpApi: FreeLLMApi | null = null;
+
 export function getFreellmApi(): FreeLLMApi | null {
   if (typeof window === 'undefined') return null;
-  return (window as { freellm?: FreeLLMApi }).freellm ?? null;
+  const injected = (window as { freellm?: FreeLLMApi }).freellm;
+  if (injected) return injected;
+  if (!httpApi) httpApi = createHttpApi();
+  return httpApi;
 }
 
 export function useIPC<T>(ipcCall: IPCCall<T>, deps: unknown[] = []): UseIPCReturn<T> {

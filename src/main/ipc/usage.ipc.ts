@@ -1,15 +1,11 @@
-import { getDashboardStats, getProviderStatistics, getDailyStats } from '../../usage/statistics.js';
-import { getRecentCalls } from '../../usage/usage-recorder.js';
 import { registerIpcHandler } from './handle.js';
+import * as usageService from '../services/usage-service.js';
 
 export function registerUsageIpc(): void {
-  registerIpcHandler('usage:dashboard', async () => getDashboardStats());
-
+  registerIpcHandler('usage:dashboard', async () => usageService.usageDashboard());
   registerIpcHandler('usage:provider-stats', async (_e, providerId: string) =>
-    getProviderStatistics(providerId as never)
+    usageService.usageProviderStats(providerId)
   );
-
-  registerIpcHandler('usage:daily-stats', async (_e, days?: number) => getDailyStats(days || 7));
-
-  registerIpcHandler('usage:recent-calls', async (_e, limit?: number) => getRecentCalls(limit || 100));
+  registerIpcHandler('usage:daily-stats', async (_e, days?: number) => usageService.usageDailyStats(days));
+  registerIpcHandler('usage:recent-calls', async (_e, limit?: number) => usageService.usageRecentCalls(limit));
 }

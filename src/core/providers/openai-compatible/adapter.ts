@@ -9,8 +9,9 @@ import type {
   GatewayUsage,
   GatewayToolCall,
 } from '../contracts.js';
-import type { AuthType } from '../../../shared/types/index.js';
+import type { AuthType, ProviderConfigField, ProviderReadiness } from '../../../shared/types/index.js';
 import { estimateTokenCount } from '../../../shared/utils/index.js';
+import { credentialKeyFor } from '../credential-keys.js';
 import {
   mapHttpError,
   mapNetworkError,
@@ -28,7 +29,21 @@ export interface OpenAICompatibleConfig {
   models?: ProviderModel[];
   credentialId?: string;
   settings?: Record<string, unknown>;
+  /** Editable non-secret fields surfaced to the UI. `baseUrl` is added automatically. */
+  configFields?: ProviderConfigField[];
+  /** Settings keys without which the provider cannot be called (e.g. `accountId`). */
+  requiredSettings?: string[];
+  /** Recompute the effective baseUrl after a settings edit. Return null to keep the previous one. */
+  resolveBaseUrl?: (settings: Record<string, unknown>) => string | null;
 }
+
+const BASE_URL_FIELD: ProviderConfigField = {
+  key: 'baseUrl',
+  label: 'Base URL',
+  type: 'url',
+  required: true,
+  placeholder: 'https://api.example.com/v1',
+};
 
 export class OpenAICompatibleAdapter implements ProviderAdapter {
   readonly providerId: string;
@@ -40,19 +55,34 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   private defaultHeaders: Record<string, string>;
   private knownModels: ProviderModel[];
   private credentialId?: string;
-  private settings?: Record<string, unknown>;
+  private settings: Record<string, unknown>;
+  private configFields: ProviderConfigField[];
+  private requiredSettings: string[];
+  private resolveBaseUrl?: (settings: Record<string, unknown>) => string | null;
   private enabled = true;
 
   constructor(config: OpenAICompatibleConfig) {
     this.providerId = config.providerId;
     this.providerName = config.providerName;
     this.authType = config.authType;
-    this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiVersion = config.apiVersion;
     this.defaultHeaders = config.defaultHeaders || {};
     this.knownModels = config.models || [];
     this.credentialId = config.credentialId;
-    this.settings = config.settings;
+    this.settings = { ...(config.settings || {}) };
+    this.requiredSettings = config.requiredSettings || [];
+    this.resolveBaseUrl = config.resolveBaseUrl;
+    this.baseUrl = this.computeBaseUrl(config.baseUrl);
+    this.configFields = [
+      BASE_URL_FIELD,
+      ...(config.configFields || []).filter((f) => f.key !== 'baseUrl'),
+    ];
+  }
+
+  private computeBaseUrl(fallback: string): string {
+    if (!this.resolveBaseUrl) return fallback.replace(/\/$/, '');
+    const resolved = this.resolveBaseUrl(this.settings);
+    return (resolved ?? fallback).replace(/\/$/, '');
   }
 
   getProviderConfig(): ProviderConfig {
@@ -64,9 +94,11 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       apiVersion: this.apiVersion,
       isEnabled: this.enabled,
       isBuiltIn: true,
-      credentialStatus: this.credentialId ? 'configured' : 'unconfigured',
+      credentialStatus: this.authType === 'none' ? 'configured' : this.credentialId ? 'configured' : 'unconfigured',
       credentialId: this.credentialId,
-      settings: this.settings,
+      settings: { ...this.settings },
+      configFields: this.configFields,
+      readiness: this.checkReadiness(),
     };
   }
 
@@ -75,7 +107,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   }
 
   setCredential(credential: string | undefined, credentialId?: string): void {
-    this.credentialId = credential ? credentialId || this.credentialId : undefined;
+    this.credentialId = credential ? credentialId || this.credentialId || credentialKeyFor(this.providerId) : undefined;
     if (credential) {
       this.defaultHeaders = { ...this.defaultHeaders, Authorization: `Bearer ${credential}` };
     } else {
@@ -85,13 +117,63 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
 
   updateBaseUrl(baseUrl: string): void {
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    if (this.baseUrl) {
+      this.settings = { ...this.settings, baseUrlOverride: this.baseUrl };
+    }
+  }
+
+  updateSettings(settings: Record<string, unknown>): void {
+    const merged = { ...this.settings };
+    for (const [key, value] of Object.entries(settings)) {
+      if (key === 'baseUrl') continue;
+      if (typeof value === 'string' ? value.trim().length === 0 : value === undefined) {
+        delete merged[key];
+        continue;
+      }
+      merged[key] = value;
+    }
+    this.settings = merged;
+    if (this.resolveBaseUrl) {
+      const resolved = this.resolveBaseUrl(merged);
+      if (resolved) this.baseUrl = resolved.replace(/\/$/, '');
+    }
   }
 
   setCredentialId(credentialId: string | undefined): void {
     this.credentialId = credentialId;
   }
 
+  checkReadiness(): ProviderReadiness {
+    if (!this.enabled) return { ready: false, reason: '服务商已禁用' };
+
+    const missingFields = this.requiredSettings.filter((key) => {
+      const value = this.settings[key];
+      return typeof value !== 'string' || value.trim().length === 0;
+    });
+    if (missingFields.length > 0) {
+      const labels = missingFields.map(
+        (key) => this.configFields.find((f) => f.key === key)?.label || key
+      );
+      return {
+        ready: false,
+        missingFields,
+        reason: `缺少必填配置: ${labels.join('、')}`,
+      };
+    }
+
+    if (this.baseUrl.includes('{') || this.baseUrl.includes('}')) {
+      return { ready: false, reason: 'Base URL 仍含未填充的占位符' };
+    }
+
+    if (this.authType === 'api-key' && !this.credentialId) {
+      return { ready: false, missingFields: ['credential'], reason: '尚未配置 API Key' };
+    }
+
+    return { ready: true };
+  }
+
   async isAvailable(): Promise<boolean> {
+    if (!this.checkReadiness().ready) return false;
     try {
       const response = await fetch(`${this.baseUrl}/models`, {
         method: 'GET',
@@ -105,6 +187,17 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   }
 
   async listModels(): Promise<ProviderModel[]> {
+    const readiness = this.checkReadiness();
+    if (!readiness.ready) {
+      // Never send a request to a half-configured endpoint (e.g. a base URL that still
+      // needs an account id). Surface the catalog as unavailable instead of 404-ing.
+      return this.knownModels.map((m) => ({
+        ...m,
+        status: 'unavailable' as const,
+        description: m.description ?? readiness.reason,
+      }));
+    }
+
     try {
       const response = await fetch(`${this.baseUrl}/models`, {
         method: 'GET',

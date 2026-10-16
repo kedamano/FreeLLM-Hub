@@ -9,8 +9,20 @@ import type {
   GatewayUsage,
 } from '../contracts.js';
 import { estimateTokenCount } from '../../../shared/utils/index.js';
-import type { ModelCapability } from '../../../shared/types/index.js';
+import type { ModelCapability, ProviderConfigField, ProviderReadiness } from '../../../shared/types/index.js';
 import { mapHttpError, mapNetworkError, withRequestTimeout } from '../request-errors.js';
+import { ProviderError } from '../../../shared/errors/index.js';
+
+const OLLAMA_CONFIG_FIELDS: ProviderConfigField[] = [
+  {
+    key: 'baseUrl',
+    label: 'Ollama 服务地址',
+    type: 'url',
+    required: true,
+    placeholder: 'http://localhost:11434',
+    help: '默认本机 11434 端口；远程部署时填写可访问的 http(s) 地址',
+  },
+];
 
 export interface OllamaConfig {
   baseUrl?: string;
@@ -30,6 +42,8 @@ export class OllamaAdapter implements ProviderAdapter {
   readonly authType = 'none' as const;
 
   private baseUrl: string;
+  private settings: Record<string, unknown> = {};
+  private enabled = true;
   private knownModels: ProviderModel[] = [];
   private modelsRequest: Promise<ProviderModel[]> | null = null;
 
@@ -59,16 +73,38 @@ export class OllamaAdapter implements ProviderAdapter {
       displayName: 'Ollama (本地推理)',
       authType: 'none',
       baseUrl: this.baseUrl,
-      isEnabled: true,
+      isEnabled: this.enabled,
       isBuiltIn: true,
       credentialStatus: 'configured',
+      settings: { ...this.settings },
+      configFields: OLLAMA_CONFIG_FIELDS,
+      readiness: this.checkReadiness(),
       metadata: {
         description: '通过 Ollama 在本地运行开源大模型',
       },
     };
   }
 
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+  }
+
+  updateBaseUrl(baseUrl: string): void {
+    this.baseUrl = baseUrl.replace(/\/$/, '');
+  }
+
+  updateSettings(settings: Record<string, unknown>): void {
+    this.settings = { ...this.settings, ...settings };
+  }
+
+  checkReadiness(): ProviderReadiness {
+    if (!this.enabled) return { ready: false, reason: '服务商已禁用' };
+    if (!/^https?:\/\//i.test(this.baseUrl)) return { ready: false, reason: 'Ollama 服务地址无效' };
+    return { ready: true };
+  }
+
   async isAvailable(): Promise<boolean> {
+    if (!this.checkReadiness().ready) return false;
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`, {
         method: 'GET',
@@ -81,6 +117,7 @@ export class OllamaAdapter implements ProviderAdapter {
   }
 
   async listModels(): Promise<ProviderModel[]> {
+    if (!this.checkReadiness().ready) return [];
     if (this.modelsRequest) return this.modelsRequest;
     this.modelsRequest = this.fetchModels().finally(() => {
       this.modelsRequest = null;

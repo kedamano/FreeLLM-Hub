@@ -298,13 +298,8 @@ export default function ProvidersPage() {
   //── Handlers ──────────────────────────────────────────────────────
 
   const requireApi = useCallback(() => {
-    const api = getFreellmApi();
-    if (!api) {
-      showToast('error', '浏览器预览模式无法调用桌面端接口，请在 FreeLLM Hub 应用窗口中操作');
-      return null;
-    }
-    return api;
-  }, [showToast]);
+    return getFreellmApi();
+  }, []);
 
   const handleDiscover = useCallback(async () => {
     if (!selectedId) return;

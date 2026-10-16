@@ -8,6 +8,10 @@ pnpm-lock.yaml
 dist/
 release/
 
+# Local runtime data (databases, credentials, logs)
+.dev-data/
+.web-data/
+
 # Logs
 logs/
 *.log

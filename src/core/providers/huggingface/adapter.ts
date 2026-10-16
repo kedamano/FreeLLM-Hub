@@ -1,4 +1,5 @@
 import { OpenAICompatibleAdapter } from '../openai-compatible/adapter.js';
+import { credentialIdFor } from '../credential-keys.js';
 
 export function createHuggingFaceAdapter(token?: string): OpenAICompatibleAdapter {
   return new OpenAICompatibleAdapter({
@@ -6,7 +7,7 @@ export function createHuggingFaceAdapter(token?: string): OpenAICompatibleAdapte
     providerName: 'Hugging Face Inference',
     baseUrl: 'https://api-inference.huggingface.co/v1',
     authType: 'api-key',
-    credentialId: token ? 'hf-token' : undefined,
+    credentialId: credentialIdFor('huggingface', token),
     defaultHeaders: token ? { Authorization: `Bearer ${token}` } : {},
     models: [
       {

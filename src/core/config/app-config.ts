@@ -1,4 +1,3 @@
-import { app } from 'electron';
 import { resolve } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 
@@ -16,13 +15,37 @@ export interface AppConfig {
 
 let cachedConfig: AppConfig | null = null;
 
+export function isElectronRuntime(): boolean {
+  return getElectronApp() !== null;
+}
+
+function getElectronApp(): { isPackaged: boolean; getPath(name: string): string } | null {
+  // process.versions.electron is also set when Electron runs in plain-node mode
+  // (ELECTRON_RUN_AS_NODE), so probe the actual main-process API instead.
+  if (!process.versions?.electron) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { app } = require('electron') as { app?: { isPackaged: boolean; getPath(name: string): string } };
+    return app && typeof app.getPath === 'function' ? app : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getAppConfig(): AppConfig {
   if (cachedConfig) return cachedConfig;
 
-  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
-  const userDataPath = isDev
-    ? resolve(process.cwd(), '.dev-data')
-    : app.getPath('userData');
+  const electronApp = getElectronApp();
+
+  let userDataPath: string;
+  let isDev: boolean;
+  if (electronApp) {
+    isDev = process.env.NODE_ENV === 'development' || !electronApp.isPackaged;
+    userDataPath = isDev ? resolve(process.cwd(), '.dev-data') : electronApp.getPath('userData');
+  } else {
+    isDev = process.env.NODE_ENV === 'development';
+    userDataPath = process.env.FREEELLM_DATA_DIR || resolve(process.cwd(), '.web-data');
+  }
 
   const dataDir = resolve(userDataPath, 'data');
   const logDir = resolve(userDataPath, 'logs');
@@ -46,4 +69,8 @@ export function getAppConfig(): AppConfig {
   };
 
   return cachedConfig;
+}
+
+export function resetAppConfigCache(): void {
+  cachedConfig = null;
 }

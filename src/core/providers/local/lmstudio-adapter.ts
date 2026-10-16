@@ -8,7 +8,6 @@ export function createLMStudioAdapter(baseUrl?: string): OpenAICompatibleAdapter
     providerName: 'LM Studio (本地)',
     baseUrl: url.replace(/\/$/, ''),
     authType: 'none',
-    credentialId: 'lmstudio-local',
     models: [
       {
         id: 'local-model',
