@@ -1,7 +1,6 @@
 import type {
   ProviderAdapter,
   ProviderRegistry,
-  ModelCapability,
 } from './contracts.js';
 
 class ProviderRegistryImpl implements ProviderRegistry {
@@ -23,10 +22,6 @@ class ProviderRegistryImpl implements ProviderRegistry {
   }
 
   getAll(): ProviderAdapter[] {
-    return Array.from(this.adapters.values());
-  }
-
-  getByCapability(capability: ModelCapability): ProviderAdapter[] {
     return Array.from(this.adapters.values());
   }
 

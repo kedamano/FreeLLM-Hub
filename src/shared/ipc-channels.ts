@@ -18,6 +18,7 @@ export const IPC_CHANNELS = [
   'providers:toggle',
   'providers:update-baseurl',
   'providers:update-config',
+  'providers:set-quota',
   'providers:discover-models',
   'providers:get-models',
   'providers:create-custom',

@@ -18,25 +18,26 @@ export class RateLimiter {
     private maxRequestsPerMinute: number = 30
   ) {}
 
-  canProceed(key: string, estimatedTokens: number = 100, limits?: RateLimitLimits): boolean {
+  /**
+   * Reserve a slot for a request that is about to be dispatched. Callers that are
+   * only ranking candidates must use `check()` instead, otherwise every probed
+   * provider burns window quota.
+   */
+  acquire(key: string, estimatedTokens: number = 100, limits?: RateLimitLimits): boolean {
+    if (!this.check(key, estimatedTokens, limits)) return false;
+
     const state = this.getOrCreateState(key);
-    this.refill(state);
-
-    const maxRequests = limits?.requestsPerMinute ?? this.maxRequestsPerMinute;
-    const maxTokens = limits?.tokensPerMinute ?? this.maxTokensPerMinute;
-
-    if (state.requestCount >= maxRequests) {
-      return false;
-    }
-
-    if (state.tokens + estimatedTokens > maxTokens) {
-      return false;
-    }
-
     state.requestCount += 1;
     state.tokens += estimatedTokens;
-
     return true;
+  }
+
+  /** Undo a reservation made by `acquire()` when the dispatch never happened. */
+  rollback(key: string, estimatedTokens: number = 100): void {
+    const state = this.states.get(key);
+    if (!state) return;
+    state.requestCount = Math.max(0, state.requestCount - 1);
+    state.tokens = Math.max(0, state.tokens - estimatedTokens);
   }
 
   check(key: string, estimatedTokens: number = 100, limits?: RateLimitLimits): boolean {

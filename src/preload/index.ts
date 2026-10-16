@@ -27,6 +27,8 @@ const api = {
       invoke('providers:update-baseurl', providerId, baseUrl),
     updateConfig: (providerId: string, input: { baseUrl?: string; settings?: Record<string, string> }) =>
       invoke('providers:update-config', providerId, input),
+    setQuota: (providerId: string, quota: { maxRequestsPerDay?: number; maxTokensPerDay?: number }) =>
+      invoke('providers:set-quota', providerId, quota),
     discoverModels: (providerId: string) => invoke('providers:discover-models', providerId),
     getModels: (providerId: string) => invoke('providers:get-models', providerId),
     createCustom: (input: { name: string; baseUrl: string; apiKey?: string }) =>

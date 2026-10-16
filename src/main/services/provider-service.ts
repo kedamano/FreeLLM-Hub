@@ -1,4 +1,13 @@
 import type { Scheduler } from '../../scheduler/scheduler.js';
+import {
+  quotaConfigFor,
+  readQuota,
+  validateQuotaInput,
+  writeQuota,
+  applyQuotaConfigsFromSettings,
+  type QuotaInput,
+} from '../../scheduler/quota-settings.js';
+import { createQuotaPersistence } from '../../usage/quota-store.js';
 import type { ModelCapabilities, ModelPricing, ProviderModel } from '../../shared/types/index.js';
 import { getProviderRegistry } from '../../core/providers/index.js';
 import { applyEnabled, applyCredential, hotSwap, ENABLED_KEY_PREFIX, makeCustomProviderId, settingsBackedStore } from '../../core/providers/bootstrap.js';
@@ -117,8 +126,59 @@ export function listProviders(scheduler: Scheduler) {
         typeof (adapter as unknown as { resolveBaseUrl?: unknown }).resolveBaseUrl === 'function',
       metadata: config.metadata,
       hasCredential: listCredentialKeys(config.id).length > 0,
+      quota: readQuota(config.id),
+      quotaRemaining: scheduler.getQuotaManager().getRemainingQuota(config.id),
     };
   });
+}
+
+export function setProviderQuota(
+  scheduler: Scheduler,
+  providerId: string,
+  input: unknown
+): { success: boolean; error?: string; quota?: QuotaInput } {
+  if (!getProviderRegistry().get(providerId)) {
+    return { success: false, error: 'Provider not found' };
+  }
+  const raw = (input ?? {}) as Record<string, unknown>;
+  const quota: QuotaInput = {
+    maxRequestsPerDay: raw.maxRequestsPerDay === undefined || raw.maxRequestsPerDay === null || raw.maxRequestsPerDay === ''
+      ? undefined
+      : Number(raw.maxRequestsPerDay),
+    maxTokensPerDay: raw.maxTokensPerDay === undefined || raw.maxTokensPerDay === null || raw.maxTokensPerDay === ''
+      ? undefined
+      : Number(raw.maxTokensPerDay),
+  };
+
+  const invalid = validateQuotaInput(quota);
+  if (invalid) return { success: false, error: invalid };
+
+  writeQuota(providerId, quota);
+  // Re-read so a cleared quota removes the scheduler config as well.
+  const effective = readQuota(providerId);
+  if (effective) {
+    scheduler.setQuotaConfig(quotaConfigFor(providerId, effective));
+  } else {
+    scheduler.getQuotaManager().clearConfig(providerId);
+  }
+  return { success: true, quota: effective };
+}
+
+/** Load persisted daily quotas for every registered provider into the scheduler. */
+export function hydrateQuotasFromSettings(scheduler: Scheduler): string[] {
+  const applied = applyQuotaConfigsFromSettings(
+    scheduler,
+    getProviderRegistry().getAll().map((adapter) => adapter.providerId)
+  );
+
+  const quotaManager = scheduler.getQuotaManager();
+  quotaManager.setPersistence(createQuotaPersistence());
+  const restored = quotaManager.hydrate();
+  if (restored > 0) {
+    console.log(`[Quota] 已恢复 ${restored} 条当日用量记录，配额不会因重启清零`);
+  }
+
+  return applied;
 }
 
 export function getProvider(providerId: string) {

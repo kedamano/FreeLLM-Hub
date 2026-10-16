@@ -10,6 +10,8 @@ import { readSetting } from './ipc/settings.ipc.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { getProviderRegistry } from '../core/providers/index.js';
 import { registerAllProviders, applyPersistedProviderEnabledFromSettings } from '../core/providers/bootstrap.js';
+import { hydrateQuotasFromSettings } from './services/provider-service.js';
+import { startLogRetentionSchedule } from '../usage/log-retention.js';
 import { getAppConfig } from '../core/config/app-config.js';
 
 export type { GatewayConfig } from './gateway/gateway-manager.js';
@@ -21,6 +23,7 @@ export class AppLifecycle {
   private gatewayManager: GatewayManager;
   private shutdownPromise: Promise<void> | null = null;
   private shutdownComplete = false;
+  private disposeLogRetention: () => void = () => {};
 
   constructor() {
     this.scheduler = new Scheduler();
@@ -41,6 +44,11 @@ export class AppLifecycle {
     this.gatewayManager.initialize();
 
     this.registerProviders();
+    const quotaProviders = hydrateQuotasFromSettings(this.scheduler);
+    if (quotaProviders.length > 0) {
+      console.log(`[App] 已加载 ${quotaProviders.length} 个供应商的每日配额配置`);
+    }
+    this.disposeLogRetention = startLogRetentionSchedule();
     this.setupSecondInstance();
     registerAllIpcHandlers(this.scheduler, this.windowManager, this.gatewayManager.getGatewayServer());
 
@@ -97,6 +105,7 @@ export class AppLifecycle {
     this.shutdownPromise = (async () => {
       console.log('[App] Shutting down...');
 
+      this.disposeLogRetention();
       await this.gatewayManager.stop();
 
       this.trayManager.destroy();

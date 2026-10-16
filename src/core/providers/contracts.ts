@@ -102,7 +102,6 @@ export interface ProviderRegistry {
   unregister(providerId: string): void;
   get(providerId: string): ProviderAdapter | undefined;
   getAll(): ProviderAdapter[];
-  getByCapability(capability: ModelCapability): ProviderAdapter[];
   getAvailable(): Promise<ProviderAdapter[]>;
 }
 

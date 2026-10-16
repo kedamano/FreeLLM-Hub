@@ -8,6 +8,8 @@ import { getCredentialStore } from '../main/security/credential-store.js';
 import { getProviderRegistry } from '../core/providers/index.js';
 import { registerAllProviders, applyPersistedProviderEnabledFromSettings } from '../core/providers/bootstrap.js';
 import { readSetting } from '../core/settings/settings-store.js';
+import { hydrateQuotasFromSettings } from '../main/services/provider-service.js';
+import { startLogRetentionSchedule } from '../usage/log-retention.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { GatewayManager } from '../main/gateway/gateway-manager.js';
 import { registerAdminApi } from './admin-api.js';
@@ -76,6 +78,12 @@ export async function startServer(options: StartServerOptions = {}) {
     },
   });
 
+  const quotaProviders = hydrateQuotasFromSettings(scheduler);
+  if (quotaProviders.length > 0) {
+    console.log(`[Web] 已加载 ${quotaProviders.length} 个供应商的每日配额配置`);
+  }
+  const disposeLogRetention = startLogRetentionSchedule();
+
   await registerAdminApi(app, { scheduler, gateway, version: readVersion() });
   registerStaticRenderer(app, rendererDir);
 
@@ -90,6 +98,7 @@ export async function startServer(options: StartServerOptions = {}) {
     if (closing) return;
     closing = true;
     console.log(`[Web] ${signal} received, shutting down...`);
+    disposeLogRetention();
     await app.close().catch(() => undefined);
     await gateway.stop().catch(() => undefined);
     closeDatabase();

@@ -48,7 +48,6 @@ function fakeRegistry(): ProviderRegistry & { adapters: Map<string, ProviderAdap
     },
     get: (id) => adapters.get(id),
     getAll: () => Array.from(adapters.values()),
-    getByCapability: () => [],
     getAvailable: async () => [],
   };
 }

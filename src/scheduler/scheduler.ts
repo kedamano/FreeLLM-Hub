@@ -17,7 +17,7 @@ import { getTaskRoute } from './task-router.js';
 import { isRetriable, getErrorCode } from './fallback.js';
 import { getProviderRegistry } from '../core/providers/registry.js';
 import type { ChatOptions } from '../core/providers/contracts.js';
-import { AllProvidersFailedError, RateLimitError } from '../shared/errors/index.js';
+import { AllProvidersFailedError, QuotaExceededError, RateLimitError, ModelNotFoundError } from '../shared/errors/index.js';
 import { estimateTokens, estimateMessagesTokens } from '../usage/tokenizer.js';
 
 const MODEL_CATALOG_TTL_MS = 60000;
@@ -121,6 +121,9 @@ export class Scheduler {
 
     const ranked = rankModels(candidates, scoreContext);
     const registry = getProviderRegistry();
+    const throttled: Array<{ providerId: ProviderId; retryAfterMs: number }> = [];
+    const quotaBlocked: ProviderId[] = [];
+    let considered = 0;
 
     for (const { model, score } of ranked) {
       const providerId = model.providerId;
@@ -137,13 +140,19 @@ export class Scheduler {
 
       if (!this.circuitBreaker.canExecute(providerId)) continue;
 
+      considered++;
+
       const rateLimitKey = `${providerId}:${model.id}`;
-      if (!this.rateLimiter.canProceed(rateLimitKey, estimatedTokens, model.rateLimits)) {
+      // Ranking must not consume window quota: probing every candidate would
+      // charge requests that were never dispatched and hide real capacity.
+      if (!this.rateLimiter.check(rateLimitKey, estimatedTokens, model.rateLimits)) {
+        throttled.push({ providerId, retryAfterMs: this.rateLimiter.getRetryAfter(rateLimitKey) });
         this.circuitBreaker.release(providerId);
         continue;
       }
 
       if (!this.quotaManager.canProceed(providerId, model.id, estimatedTokens)) {
+        quotaBlocked.push(providerId);
         this.circuitBreaker.release(providerId);
         continue;
       }
@@ -156,6 +165,16 @@ export class Scheduler {
         score,
         estimatedCost: this.estimateCost(model, request),
       };
+    }
+
+    // Every candidate that was healthy enough to be considered is rate limited:
+    // that is a 429 the caller can retry, not a 502 from an upstream failure.
+    if (considered > 0 && throttled.length === considered) {
+      throw new RateLimitError(throttled[0].providerId, throttled[0].retryAfterMs || undefined);
+    }
+
+    if (considered > 0 && quotaBlocked.length === considered) {
+      throw new QuotaExceededError(quotaBlocked[0]);
     }
 
     return null;
@@ -192,7 +211,7 @@ export class Scheduler {
 
       if (!decision) {
         if (lastError || failures.length > 0) break;
-        throw new Error('No available models for this request');
+        throw new ModelNotFoundError(request.model ?? 'any');
       }
 
       const modelKey = `${decision.providerId}:${decision.model.id}`;
@@ -204,6 +223,12 @@ export class Scheduler {
         if (!attemptedProviders.includes(decision.providerId)) {
           attemptedProviders.push(decision.providerId);
         }
+        continue;
+      }
+
+      const rateLimitKey = `${decision.providerId}:${decision.model.id}`;
+      if (!this.rateLimiter.acquire(rateLimitKey, estimatedTokens, decision.model.rateLimits)) {
+        this.circuitBreaker.release(decision.providerId);
         continue;
       }
 
@@ -232,6 +257,9 @@ export class Scheduler {
           durationMs: Date.now() - startTime,
         };
       } catch (err) {
+        // The reservation was for a request that never completed; release it so
+        // the window reflects real traffic and the next candidate sees capacity.
+        this.rateLimiter.rollback(rateLimitKey, estimatedTokens);
         lastError = err instanceof Error ? err : new Error(String(err));
         failures.push({
           providerId: decision.providerId,
@@ -293,7 +321,7 @@ export class Scheduler {
 
       if (!decision) {
         if (lastError) break;
-        throw new Error('No available models for streaming');
+        throw new ModelNotFoundError(request.model ?? 'any');
       }
 
       const modelKey = `${decision.providerId}:${decision.model.id}`;
@@ -315,6 +343,12 @@ export class Scheduler {
         tools: request.tools,
         responseFormat: request.responseFormat,
       };
+
+      const rateLimitKey = `${decision.providerId}:${decision.model.id}`;
+      if (!this.rateLimiter.acquire(rateLimitKey, estimatedTokens, decision.model.rateLimits)) {
+        this.circuitBreaker.release(decision.providerId);
+        continue;
+      }
 
       let fullContent = '';
       let upstreamUsage: GatewayUsage | null = null;
@@ -348,6 +382,7 @@ export class Scheduler {
           throw err;
         }
 
+        this.rateLimiter.rollback(rateLimitKey, estimatedTokens);
         if (
           !(err instanceof RateLimitError) &&
           !attemptedProviders.includes(decision.providerId)

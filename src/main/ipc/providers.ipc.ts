@@ -39,6 +39,9 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
   registerIpcHandler('providers:update-config', async (_e, providerId: string, input) =>
     providerService.saveProviderConfig(providerId, input)
   );
+  registerIpcHandler('providers:set-quota', async (_e, providerId: string, input) =>
+    providerService.setProviderQuota(scheduler, providerId, input)
+  );
   registerIpcHandler('providers:discover-models', async (_e, providerId: string) =>
     providerService.discoverProviderModels(providerId)
   );

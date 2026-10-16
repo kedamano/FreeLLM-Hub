@@ -115,6 +115,9 @@ export function getDailyStats(days: number = 7): Array<{
   successRate: number;
 }> {
   const db = getDatabase();
+  // call_logs.timestamp stores ISO-8601 strings; comparing them against
+  // datetime('now') output ('YYYY-MM-DD HH:MM:SS') mis-orders the boundary day.
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const rows = db
     .prepare(
       `SELECT
@@ -123,11 +126,11 @@ export function getDailyStats(days: number = 7): Array<{
         SUM(prompt_tokens) + SUM(completion_tokens) as tokens,
         AVG(CASE WHEN status = 'success' THEN 1.0 ELSE 0.0 END) as success_rate
       FROM call_logs
-      WHERE timestamp >= datetime('now', '-' || ? || ' days')
+      WHERE timestamp >= ?
       GROUP BY date(timestamp)
       ORDER BY date DESC`
     )
-    .all(days) as Array<{ date: string; requests: number; tokens: number; success_rate: number }>;
+    .all(cutoff) as Array<{ date: string; requests: number; tokens: number; success_rate: number }>;
 
   return rows.map((r) => ({
     date: r.date,

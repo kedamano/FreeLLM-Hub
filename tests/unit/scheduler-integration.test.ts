@@ -88,7 +88,7 @@ describe('Scheduler Integration', () => {
   it('should expose rate limiter', () => {
     const limiter = scheduler.getRateLimiter();
     expect(limiter).toBeDefined();
-    expect(limiter.canProceed('test-key')).toBe(true);
+    expect(limiter.acquire('test-key')).toBe(true);
   });
 
   it('should expose quota manager', () => {

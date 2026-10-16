@@ -31,6 +31,8 @@ export function closeDatabase(): void {
 }
 
 function runMigrations(db: Database.Database): void {
+  // Circuit breaker state is deliberately in-memory only: a restart should give a
+  // failing provider a fresh chance, so there is no persisted breaker table.
   db.exec(`
     CREATE TABLE IF NOT EXISTS providers (
       id TEXT PRIMARY KEY,
@@ -80,14 +82,6 @@ function runMigrations(db: Database.Database): void {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS circuit_breakers (
-      provider_id TEXT PRIMARY KEY,
-      state TEXT NOT NULL DEFAULT 'closed',
-      failure_count INTEGER NOT NULL DEFAULT 0,
-      last_failure_at TEXT,
-      last_state_change_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS quota_tracking (

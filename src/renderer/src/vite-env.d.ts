@@ -37,6 +37,10 @@ interface Window {
         providerId: string,
         input: { baseUrl?: string; settings?: Record<string, string> }
       ) => Promise<{ success: boolean; error?: string }>;
+      setQuota: (
+        providerId: string,
+        quota: { maxRequestsPerDay?: number; maxTokensPerDay?: number }
+      ) => Promise<{ success: boolean; error?: string }>;
       discoverModels: (providerId: string) => Promise<{
         success: boolean;
         models?: unknown[];

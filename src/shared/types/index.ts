@@ -91,16 +91,19 @@ export interface ProviderConfig {
   };
 }
 
-export type TaskType =
-  | 'general'
-  | 'coding'
-  | 'analysis'
-  | 'creative'
-  | 'summarization'
-  | 'classification'
-  | 'extraction'
-  | 'translation'
-  | 'lightweight';
+export const TASK_TYPES = [
+  'general',
+  'coding',
+  'analysis',
+  'creative',
+  'summarization',
+  'classification',
+  'extraction',
+  'translation',
+  'lightweight',
+] as const;
+
+export type TaskType = (typeof TASK_TYPES)[number];
 
 export interface GatewayRequest {
   requestId: string;

@@ -93,12 +93,16 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
   );
 
   app.put<{ Params: { id: string }; Body: { baseUrl?: string; settings?: Record<string, string> } }>(
-    '/api/providers/:id/config',
-    async (request) =>
+    '/api/providers/:id/config',    async (request) =>
       providerService.saveProviderConfig(request.params.id, {
         baseUrl: request.body?.baseUrl,
         settings: request.body?.settings,
       })
+  );
+
+  app.put<{ Params: { id: string }; Body: { maxRequestsPerDay?: number; maxTokensPerDay?: number } }>(
+    '/api/providers/:id/quota',
+    async (request) => providerService.setProviderQuota(scheduler, request.params.id, request.body)
   );
 
   app.post<{ Params: { id: string } }>('/api/providers/:id/discover-models', async (request) =>

@@ -8,10 +8,18 @@ export const EDITABLE_SETTINGS_KEYS = new Set<string>([
   'compact_mode',
   'default_task_type',
   'log_level',
+  'log_retention_days',
   'first_run_complete',
 ]);
 
-export const RESERVED_PREFIXES = ['gateway_', 'provider-enabled:', 'credential'];
+export const RESERVED_PREFIXES = [
+  'gateway_',
+  'credential',
+  'provider-enabled:',
+  'provider-baseurl:',
+  'provider-settings:',
+  'provider-quota:',
+];
 
 export function isEditableKey(key: unknown): key is string {
   return typeof key === 'string' && EDITABLE_SETTINGS_KEYS.has(key);

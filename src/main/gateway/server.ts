@@ -10,9 +10,17 @@ import type {
   ProviderId,
 } from '../../shared/types/index.js';
 import { generateRequestId } from '../../shared/utils/index.js';
-import { AllProvidersFailedError, RateLimitError, AuthenticationError } from '../../shared/errors/index.js';
+import {
+  AllProvidersFailedError,
+  AuthenticationError,
+  FreeLLMError,
+  ProviderError,
+  RateLimitError,
+} from '../../shared/errors/index.js';
+import { TASK_TYPES, type TaskType } from '../../shared/types/index.js';
 import { redactSecrets } from '../security/secret-redaction.js';
 import { getAppConfig } from '../../core/config/app-config.js';
+import { readSetting } from '../../core/settings/settings-store.js';
 import { registerCommonMiddleware } from './middleware.js';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
@@ -250,6 +258,7 @@ export class GatewayServer {
         stream?: boolean;
         tools?: unknown[];
         response_format?: { type: string };
+        task_type?: string;
       };
     }>('/v1/chat/completions', async (request, reply) => {
       const body = request.body;
@@ -273,6 +282,7 @@ export class GatewayServer {
           content: m.content,
         })),
         model: body.model,
+        taskType: parseTaskType(body.task_type) ?? parseTaskType(readSetting('default_task_type')),
         maxTokens: body.max_tokens,
         temperature: body.temperature,
         stream: body.stream,
@@ -329,24 +339,25 @@ export class GatewayServer {
 
       return reply.send(response);
     } catch (err) {
+      const desc = describeError(err);
       recordCall({
         requestId: request.requestId,
-        providerId: 'unknown' as ProviderId,
+        providerId: (extractProviderId(err) ?? 'unknown') as ProviderId,
         modelId: request.model ?? 'unknown',
         taskType: request.taskType,
-        status: 'error',
+        status: desc.code === 'RATE_LIMITED' ? 'rate_limited' : 'error',
         durationMs: Date.now() - startTime,
         promptTokens: 0,
         completionTokens: 0,
-        errorMessage: redactSecrets(err instanceof Error ? err.message : String(err)),
+        errorMessage: redactSecrets(getSafeErrorMessage(err)),
       });
 
-      const statusCode = getErrorStatusCode(err);
-      return reply.status(statusCode).send({
+      if (desc.retryAfterSeconds) reply.header('Retry-After', String(desc.retryAfterSeconds));
+      return reply.status(desc.status).send({
         error: {
           message: redactSecrets(getSafeErrorMessage(err)),
-          type: getErrorType(err),
-          code: getErrorCode(err),
+          type: desc.type,
+          code: desc.code,
         },
       });
     }
@@ -452,12 +463,14 @@ export class GatewayServer {
           errorMessage: clientGone ? 'Client disconnected before completion' : undefined,
         });
       } catch (err) {
+        const desc = describeError(err);
+        if (providerId === 'unknown') providerId = (extractProviderId(err) ?? 'unknown') as ProviderId;
         recordCall({
           requestId: request.requestId,
           providerId,
           modelId,
           taskType: request.taskType,
-          status: 'error',
+          status: desc.code === 'RATE_LIMITED' ? 'rate_limited' : 'error',
           durationMs: Date.now() - startTime,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
@@ -468,8 +481,8 @@ export class GatewayServer {
           const errorData = JSON.stringify({
             error: {
               message: redactSecrets(getSafeErrorMessage(err)),
-              type: getErrorType(err),
-              code: getErrorCode(err),
+              type: desc.type,
+              code: desc.code,
             },
           });
           await write(`data: ${errorData}\n\n`);
@@ -492,11 +505,74 @@ function resolveGatewayLogFile(): string {
   }
 }
 
-function getErrorStatusCode(err: unknown): number {
-  if (err instanceof RateLimitError) return 429;
-  if (err instanceof AuthenticationError) return 401;
-  if (err instanceof AllProvidersFailedError) return 503;
-  return 502;
+function parseTaskType(value: unknown): TaskType | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  return (TASK_TYPES as readonly string[]).includes(normalized)
+    ? (normalized as TaskType)
+    : undefined;
+}
+
+interface ErrorDescription {
+  status: number;
+  type: string;
+  code: string;
+  retryAfterSeconds?: number;
+}
+
+/**
+ * Translate scheduler/adapter errors into OpenAI-shaped HTTP semantics instead of
+ * flattening everything onto 502, so clients can tell "retry later" (429) from
+ * "this model does not exist" (404) from "the upstream broke" (502).
+ */
+function describeError(err: unknown): ErrorDescription {
+  if (err instanceof RateLimitError) {
+    return {
+      status: 429,
+      type: 'rate_limited',
+      code: 'RATE_LIMITED',
+      retryAfterSeconds: Math.max(1, Math.ceil((err.retryAfterMs ?? 60_000) / 1000)),
+    };
+  }
+  if (err instanceof AuthenticationError) {
+    return { status: 401, type: 'auth_error', code: 'AUTH_FAILED' };
+  }
+  if (err instanceof AllProvidersFailedError) {
+    return { status: 503, type: 'no_providers_available', code: 'ALL_FAILED' };
+  }
+
+  const code = err instanceof FreeLLMError ? err.code : undefined;
+  switch (code) {
+    case 'MODEL_NOT_FOUND':
+      return { status: 404, type: 'model_not_found', code: 'MODEL_NOT_FOUND' };
+    case 'BAD_REQUEST':
+    case 'INVALID_REQUEST':
+      return { status: 400, type: 'invalid_request', code };
+    case 'CONTEXT_LENGTH_EXCEEDED':
+      return { status: 400, type: 'invalid_request', code };
+    case 'QUOTA_EXCEEDED':
+      return { status: 429, type: 'quota_exceeded', code, retryAfterSeconds: 3600 };
+    case 'TIMEOUT':
+      return { status: 504, type: 'timeout', code };
+    case 'CIRCUIT_OPEN':
+      return { status: 503, type: 'no_providers_available', code, retryAfterSeconds: 30 };
+    case 'NETWORK_ERROR':
+    case 'SERVER_ERROR':
+      return { status: 502, type: 'upstream_error', code };
+    default:
+      // Unrecognised failures come from the upstream chain, not the gateway itself.
+      return { status: 502, type: 'upstream_error', code: code ?? 'SERVER_ERROR' };
+  }
+}
+
+/** Providers that actually served (or were attempted by) the scheduler, for call logging. */
+function extractProviderId(err: unknown): ProviderId | null {
+  if (err instanceof ProviderError) return err.providerId as ProviderId;
+  if (err instanceof AllProvidersFailedError) {
+    const first = err.errors[0]?.providerId;
+    return first ? (first as ProviderId) : null;
+  }
+  return null;
 }
 
 function getSafeErrorMessage(err: unknown): string {
@@ -509,24 +585,30 @@ function getSafeErrorMessage(err: unknown): string {
   if (err instanceof AllProvidersFailedError) {
     return 'All providers are currently unavailable. Please try again later.';
   }
-  if (err instanceof Error) {
-    return 'An error occurred while processing your request.';
+  if (err instanceof FreeLLMError) {
+    switch (err.code) {
+      case 'MODEL_NOT_FOUND':
+        return `No available provider can serve model '${err.details?.modelId ?? ''}'. Check the model id on the 模型目录 page.`;
+      case 'BAD_REQUEST':
+      case 'INVALID_REQUEST':
+      case 'CONTEXT_LENGTH_EXCEEDED':
+        return 'The request was rejected by the provider. Check the message content, max_tokens and model context window.';
+      case 'QUOTA_EXCEEDED':
+        return 'Daily quota reached for this provider. Try again after the quota period resets.';
+      case 'TIMEOUT':
+        return 'The provider timed out while processing the request.';
+      case 'NETWORK_ERROR':
+        return 'Failed to reach the provider.';
+      case 'SERVER_ERROR':
+        return 'The provider returned a server error.';
+      default:
+        break;
+    }
   }
-  return 'Unknown error occurred.';
-}
-
-function getErrorType(err: unknown): string {
-  if (err instanceof RateLimitError) return 'rate_limited';
-  if (err instanceof AuthenticationError) return 'auth_error';
-  if (err instanceof AllProvidersFailedError) return 'no_providers_available';
-  return 'server_error';
-}
-
-function getErrorCode(err: unknown): string {
-  if (err instanceof RateLimitError) return 'RATE_LIMITED';
-  if (err instanceof AuthenticationError) return 'AUTH_FAILED';
-  if (err instanceof AllProvidersFailedError) return 'ALL_FAILED';
-  return 'SERVER_ERROR';
+  if (err instanceof Error && err.message) {
+    return redactSecrets(err.message).slice(0, 300);
+  }
+  return 'An error occurred while processing your request.';
 }
 
 /** Generate a secure gateway access token */

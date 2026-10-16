@@ -81,6 +81,11 @@ function createHttpApi(): FreeLLMApi {
           method: 'PUT',
           body: JSON.stringify(input),
         }),
+      setQuota: (providerId: string, quota: { maxRequestsPerDay?: number; maxTokensPerDay?: number }) =>
+        http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/quota`, {
+          method: 'PUT',
+          body: JSON.stringify(quota),
+        }),
       discoverModels: (providerId: string) =>
         postJson<{ success: boolean; models?: unknown[]; error?: string }>(
           `/providers/${seg(providerId)}/discover-models`

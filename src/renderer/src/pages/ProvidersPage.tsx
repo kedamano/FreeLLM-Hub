@@ -26,6 +26,8 @@ interface ProviderInfo {
   configFields?: ProviderConfigFieldInfo[];
   settings?: Record<string, unknown>;
   baseUrlDerived?: boolean;
+  quota?: { maxRequestsPerDay?: number; maxTokensPerDay?: number };
+  quotaRemaining?: { requests?: number; tokens?: number; unlimited: boolean };
   metadata?: { description?: string };
 }
 
@@ -234,6 +236,10 @@ export default function ProvidersPage() {
   // Provider-specific non-secret config fields (e.g. Cloudflare accountId)
   const [extraSettings, setExtraSettings] = useState<Record<string, string>>({});
 
+  // Daily quota (per provider) enforced by the scheduler
+  const [quotaRequests, setQuotaRequests] = useState('');
+  const [quotaTokens, setQuotaTokens] = useState('');
+
   // Multi-key state
   const [savedKeys, setSavedKeys] = useState<CredentialSlot[]>([]);
   const [revealedKeys, setRevealedKeys] = useState<Record<number, string>>({});
@@ -329,6 +335,8 @@ export default function ProvidersPage() {
         extras[field.key] = typeof stored === 'string' ? stored : '';
       }
       setExtraSettings(extras);
+      setQuotaRequests(p.quota?.maxRequestsPerDay ? String(p.quota.maxRequestsPerDay) : '');
+      setQuotaTokens(p.quota?.maxTokensPerDay ? String(p.quota.maxTokensPerDay) : '');
     }
   }, [selectedId, providers]);
 
@@ -587,6 +595,41 @@ export default function ProvidersPage() {
     setExtraSettings((prev) => ({ ...prev, [key]: value }));
   }, []);
 
+  const handleSaveQuota = useCallback(async () => {
+    if (!selectedId) return;
+    const api = requireApi();
+    if (!api) return;
+
+    const toNumber = (value: string): number | undefined => {
+      const trimmed = value.trim();
+      if (!trimmed) return undefined;
+      const n = Number(trimmed);
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : NaN;
+    };
+    const payload = {
+      maxRequestsPerDay: toNumber(quotaRequests),
+      maxTokensPerDay: toNumber(quotaTokens),
+    };
+    if (Number.isNaN(payload.maxRequestsPerDay) || Number.isNaN(payload.maxTokensPerDay)) {
+      showToast('error', '配额需要是不小于 0 的整数（留空表示不限制）');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const res = await api.providers.setQuota(selectedId, payload);
+      assertOk(res, '配额保存失败');
+      await loadProviders();
+      showToast(
+        'success',
+        payload.maxRequestsPerDay || payload.maxTokensPerDay ? '每日配额已更新' : '已取消该供应商的配额限制'
+      );
+    } catch (err) {
+      showToast('error', err instanceof Error ? err.message : '配额保存失败');
+    }
+    setSaving(false);
+  }, [selectedId, quotaRequests, quotaTokens, loadProviders, showToast, requireApi]);
+
   const handleTest = useCallback(async () => {
     if (!selectedId) return;
     const api = requireApi();
@@ -823,6 +866,12 @@ export default function ProvidersPage() {
               extraSettings={extraSettings}
               onExtraSettingsChange={handleExtraSettingsChange}
               onSaveExtraSettings={handleSaveExtraSettings}
+              quotaRequests={quotaRequests}
+              quotaTokens={quotaTokens}
+              onQuotaChange={(field, value) =>
+                field === 'requests' ? setQuotaRequests(value) : setQuotaTokens(value)
+              }
+              onSaveQuota={handleSaveQuota}
               onTest={handleTest}
               onToggle={handleToggle}
               onDeleteCustom={selectedProvider && !selectedProvider.isBuiltIn ? handleDeleteCustom : undefined}
@@ -921,6 +970,10 @@ interface ConfigPanelProps {
   extraSettings: Record<string, string>;
   onExtraSettingsChange: (key: string, value: string) => void;
   onSaveExtraSettings: () => Promise<void>;
+  quotaRequests: string;
+  quotaTokens: string;
+  onQuotaChange: (field: 'requests' | 'tokens', value: string) => void;
+  onSaveQuota: () => Promise<void>;
   onTest: () => Promise<void>;
   onToggle: (enabled: boolean) => Promise<void>;
   onDeleteCustom?: () => Promise<void>;
@@ -954,6 +1007,10 @@ const ConfigPanel = memo(function ConfigPanel({
   extraSettings,
   onExtraSettingsChange,
   onSaveExtraSettings,
+  quotaRequests,
+  quotaTokens,
+  onQuotaChange,
+  onSaveQuota,
   onTest,
   onToggle,
   onDeleteCustom,
@@ -1055,6 +1112,50 @@ const ConfigPanel = memo(function ConfigPanel({
           </div>
         </div>
       )}
+
+      {/* Daily quota enforced by the scheduler */}
+      <div className="mb-4">
+        <label className="label text-surface-600">每日配额（可选）</label>
+        <div className="flex flex-wrap gap-2">
+          <input
+            type="number"
+            min={0}
+            value={quotaRequests}
+            onChange={(e) => onQuotaChange('requests', e.target.value)}
+            placeholder="每日请求上限"
+            aria-label="每日请求上限"
+            className="input-field flex-1 min-w-[9rem] font-mono text-xs"
+          />
+          <input
+            type="number"
+            min={0}
+            value={quotaTokens}
+            onChange={(e) => onQuotaChange('tokens', e.target.value)}
+            placeholder="每日 Token 上限"
+            aria-label="每日 Token 上限"
+            className="input-field flex-1 min-w-[9rem] font-mono text-xs"
+          />
+          <button onClick={onSaveQuota} disabled={saving} className="btn-secondary text-xs shrink-0">
+            保存配额
+          </button>
+        </div>
+        <p className="text-[11px] text-surface-400 mt-1">
+          留空表示不限制；达到上限后调度器会跳过该供应商，改用其他可用免费模型。
+        </p>
+        {provider.quotaRemaining && !provider.quotaRemaining.unlimited && (
+          <p className="text-[11px] text-surface-500 mt-1">
+            今日剩余：
+            {provider.quotaRemaining.requests !== undefined
+              ? `${provider.quotaRemaining.requests} 次请求`
+              : '请求次数不限'}
+            {' · '}
+            {provider.quotaRemaining.tokens !== undefined
+              ? `${provider.quotaRemaining.tokens.toLocaleString()} tokens`
+              : 'token 不限'}
+            （重启不清零）
+          </p>
+        )}
+      </div>
 
       {/* API Format: fixed per provider, shown read-only */}
       <div className="mb-4">

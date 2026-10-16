@@ -41,7 +41,6 @@ vi.mock('../../src/core/providers/registry.js', () => ({
       chat: mockChat,
       chatStream: vi.fn(),
     }),
-    getByCapability: () => [],
     getAvailable: () => Promise.resolve([]),
     register: vi.fn(),
     unregister: vi.fn(),
@@ -53,7 +52,13 @@ vi.mock('../../src/usage/usage-recorder.js', () => ({
 }));
 
 import { GatewayServer, generateGatewayToken, safeTokenEquals } from '../../src/main/gateway/server';
-import { AllProvidersFailedError, RateLimitError, AuthenticationError } from '../../src/shared/errors/index';
+import {
+  AllProvidersFailedError,
+  AuthenticationError,
+  ProviderError,
+  QuotaExceededError,
+  RateLimitError,
+} from '../../src/shared/errors/index';
 
 const CHAT_PAYLOAD = { messages: [{ role: 'user', content: 'Hello' }] };
 
@@ -212,13 +217,80 @@ describe('Gateway HTTP Integration', () => {
       expect(mockRecordCall).toHaveBeenCalledWith(expect.objectContaining({ status: 'error' }));
     });
 
-    it('should map RateLimitError to 429', async () => {
-      mockChat.mockRejectedValue(new RateLimitError('mock-provider'));
+    it('should map RateLimitError to 429 with Retry-After', async () => {
+      mockChat.mockRejectedValue(new RateLimitError('mock-provider', 45_000));
 
       const response = await app.inject({ method: 'POST', url: '/v1/chat/completions', payload: CHAT_PAYLOAD });
 
       expect(response.statusCode).toBe(429);
       expect(response.json().error.code).toBe('RATE_LIMITED');
+      expect(response.headers['retry-after']).toBe('45');
+    });
+
+    it('should map QuotaExceededError to 429 and record the provider', async () => {
+      mockChat.mockRejectedValue(new QuotaExceededError('mock-provider'));
+
+      const response = await app.inject({ method: 'POST', url: '/v1/chat/completions', payload: CHAT_PAYLOAD });
+
+      expect(response.statusCode).toBe(429);
+      expect(response.json().error.code).toBe('QUOTA_EXCEEDED');
+      expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
+      expect(mockRecordCall).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: 'mock-provider', status: 'error' })
+      );
+    });
+
+    it('should map MODEL_NOT_FOUND to 404 and log the failing provider', async () => {
+      mockChat.mockRejectedValue(
+        new ProviderError('Model not found at mock-provider', 'mock-provider', 'MODEL_NOT_FOUND')
+      );
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/chat/completions',
+        payload: { ...CHAT_PAYLOAD, model: 'gone-model' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('model_not_found');
+      expect(mockRecordCall).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: 'mock-provider', modelId: 'gone-model', status: 'error' })
+      );
+    });
+
+    it('should map BAD_REQUEST to 400 instead of a generic 502', async () => {
+      mockChat.mockRejectedValue(
+        new ProviderError('context length exceeded', 'mock-provider', 'BAD_REQUEST')
+      );
+
+      const response = await app.inject({ method: 'POST', url: '/v1/chat/completions', payload: CHAT_PAYLOAD });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.type).toBe('invalid_request');
+      expect(response.json().error.code).toBe('BAD_REQUEST');
+    });
+
+    it('should forward task_type to the scheduler for capability routing', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/chat/completions',
+        payload: { ...CHAT_PAYLOAD, task_type: 'coding' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockChat.mock.calls[0][0].taskType).toBe('coding');
+      expect(mockRecordCall).toHaveBeenCalledWith(expect.objectContaining({ taskType: 'coding' }));
+    });
+
+    it('should ignore an unknown task_type instead of guessing', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/chat/completions',
+        payload: { ...CHAT_PAYLOAD, task_type: 'write-poetry' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockChat.mock.calls[0][0].taskType).toBeUndefined();
     });
 
     it('should map AuthenticationError to 401', async () => {
@@ -280,7 +352,9 @@ describe('Gateway HTTP Integration', () => {
       const text = await response.text();
       expect(text).toContain('RATE_LIMITED');
       expect(text).not.toContain('data: [DONE]');
-      expect(mockRecordCall).toHaveBeenCalledWith(expect.objectContaining({ status: 'error' }));
+      expect(mockRecordCall).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'rate_limited', providerId: 'mock-provider' })
+      );
     });
 
     it('should stop upstream streaming when the client disconnects', async () => {

@@ -179,7 +179,6 @@ vi.mock('../../src/core/providers/registry.js', () => {
     get: (id: string) => (id === 'groq' ? adapter : undefined),
     register: vi.fn(),
     unregister: vi.fn(),
-    getByCapability: () => [],
     getAvailable: async () => [adapter],
   };
   return { getProviderRegistry: () => registry };
