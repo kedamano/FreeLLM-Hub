@@ -5,6 +5,7 @@ interface BreakerState {
   failureCount: number;
   lastFailureAt: number;
   lastStateChangeAt: number;
+  halfOpenInFlight: number;
 }
 
 export interface CircuitBreakerOptions {
@@ -38,18 +39,31 @@ export class CircuitBreaker {
         if (elapsed >= this.options.resetTimeoutMs) {
           state.state = 'half-open';
           state.lastStateChangeAt = Date.now();
+          state.halfOpenInFlight = 1;
           return true;
         }
         return false;
       }
-      case 'half-open':
+      case 'half-open': {
+        if (state.halfOpenInFlight >= this.options.halfOpenMaxRequests) {
+          return false;
+        }
+        state.halfOpenInFlight += 1;
         return true;
+      }
     }
+  }
+
+  release(key: string): void {
+    const state = this.states.get(key);
+    if (!state || state.state !== 'half-open') return;
+    state.halfOpenInFlight = Math.max(0, state.halfOpenInFlight - 1);
   }
 
   recordSuccess(key: string): void {
     const state = this.getState(key);
     state.failureCount = 0;
+    state.halfOpenInFlight = 0;
     state.state = 'closed';
     state.lastStateChangeAt = Date.now();
   }
@@ -58,6 +72,12 @@ export class CircuitBreaker {
     const state = this.getState(key);
     state.failureCount += 1;
     state.lastFailureAt = Date.now();
+    if (state.state === 'half-open') {
+      state.halfOpenInFlight = 0;
+      state.state = 'open';
+      state.lastStateChangeAt = Date.now();
+      return;
+    }
 
     if (state.failureCount >= this.options.failureThreshold) {
       state.state = 'open';
@@ -73,6 +93,7 @@ export class CircuitBreaker {
         failureCount: 0,
         lastFailureAt: 0,
         lastStateChangeAt: Date.now(),
+        halfOpenInFlight: 0,
       };
       this.states.set(key, state);
     }

@@ -1,5 +1,6 @@
 import { getDashboardStats, getProviderStatistics, getDailyStats } from '../../usage/statistics.js';
 import { getRecentCalls } from '../../usage/usage-recorder.js';
+import type { IpcMainInvokeEvent } from 'electron';
 
 export function registerUsageIpc(): void {
   const { ipcMain } = require('electron');
@@ -8,15 +9,15 @@ export function registerUsageIpc(): void {
     return getDashboardStats();
   });
 
-  ipcMain.handle('usage:provider-stats', async (_event, providerId: string) => {
+  ipcMain.handle('usage:provider-stats', async (_e: IpcMainInvokeEvent, providerId: string) => {
     return getProviderStatistics(providerId as never);
   });
 
-  ipcMain.handle('usage:daily-stats', async (_event, days?: number) => {
+  ipcMain.handle('usage:daily-stats', async (_e: IpcMainInvokeEvent, days?: number) => {
     return getDailyStats(days || 7);
   });
 
-  ipcMain.handle('usage:recent-calls', async (_event, limit?: number) => {
+  ipcMain.handle('usage:recent-calls', async (_e: IpcMainInvokeEvent, limit?: number) => {
     return getRecentCalls(limit || 100);
   });
 

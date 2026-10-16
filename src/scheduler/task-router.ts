@@ -1,11 +1,10 @@
-import type { TaskType } from '../shared/types/index.js';
-import type { ProviderModel } from '../shared/types/index.js';
+import type { TaskType, ModelCapability, ProviderModel } from '../shared/types/index.js';
 
 export interface TaskRoute {
   taskType: TaskType;
   preferredProviders: string[];
   preferredModels: string[];
-  minCapabilities: string[];
+  minCapabilities: ModelCapability[];
   priority: number;
 }
 
@@ -90,8 +89,8 @@ export function scoreModelForTask(model: ProviderModel, taskType: TaskType): num
     score += 30;
   }
 
-  const hasAllCaps = route.minCapabilities.every((cap: string) =>
-    model.capabilities.supported.includes(cap as never)
+  const hasAllCaps = route.minCapabilities.every((cap: ModelCapability) =>
+    model.capabilities.supported.includes(cap)
   );
   if (hasAllCaps) score += 20;
   else score -= 50;

@@ -7,7 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
 
 function run(command, args) {
-  console.log(`[build] ${command} ${args.join(')}`);
+  console.log('[build] ' + command + ' ' + args.join(' '));
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', shell: true });
   if (result.status !== 0) {
     process.exit(result.status || 1);
@@ -26,7 +26,7 @@ async function main() {
   run('npx', ['tsc', '-p', 'tsconfig.main.json']);
   run('npx', ['vite', 'build']);
 
-  console.log('\n[build] Build complete!');
+  console.log('[build] Build complete!');
 }
 
 main().catch((err) => {

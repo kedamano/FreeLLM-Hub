@@ -38,10 +38,36 @@ export function buildFallbackChain(
   return { model: null, providerConfig: null, attempts };
 }
 
-export function isRetriable(error: unknown): boolean {
+const RETRIABLE_CODES = [
+  'RATE_LIMITED',
+  'TIMEOUT',
+  'SERVER_ERROR',
+  'ALL_FAILED',
+  'NETWORK_ERROR',
+];
+
+export function getErrorCode(error: unknown): string | undefined {
   if (typeof error === 'object' && error !== null && 'code' in error) {
-    const code = (error as { code: string }).code;
-    return ['RATE_LIMITED', 'TIMEOUT', 'SERVER_ERROR', 'ALL_FAILED'].includes(code);
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string') return code;
   }
+  return undefined;
+}
+
+export function isRetriable(error: unknown): boolean {
+  const code = getErrorCode(error);
+  if (code) return RETRIABLE_CODES.includes(code);
+
+  if (error instanceof Error) {
+    const signature = `${error.name} ${error.message}`.toLowerCase();
+    if (/401|403|unauthorized|forbidden|authentication|invalid api key|invalid key/.test(signature)) {
+      return false;
+    }
+    if (/400|404|not found|bad request|invalid_request|unsupported/.test(signature)) {
+      return false;
+    }
+    return true;
+  }
+
   return false;
 }

@@ -10,6 +10,8 @@ const createMockFreellm = () => ({
     setCredential: vi.fn().mockResolvedValue({ success: true }),
     removeCredential: vi.fn().mockResolvedValue({ success: true }),
     toggle: vi.fn().mockResolvedValue({ success: true }),
+    updateBaseUrl: vi.fn().mockResolvedValue({ success: true }),
+    discoverModels: vi.fn().mockResolvedValue({ success: true, models: [] }),
   },
   models: {
     list: vi.fn().mockResolvedValue([]),
@@ -42,8 +44,10 @@ const createMockFreellm = () => ({
     recentCalls: vi.fn().mockResolvedValue([]),
   },
   gateway: {
-    status: vi.fn().mockResolvedValue({ running: true, port: 0 }),
-    port: vi.fn().mockResolvedValue(0),
+    status: vi.fn().mockResolvedValue({ running: true, host: '127.0.0.1', port: 3000, url: 'http://127.0.0.1:3000', authEnabled: false, hasToken: false }),
+    getToken: vi.fn().mockResolvedValue(''),
+    generateToken: vi.fn().mockResolvedValue('mock-token'),
+    updateConfig: vi.fn().mockResolvedValue({ success: true }),
   },
   app: {
     version: vi.fn().mockResolvedValue('0.1.0'),

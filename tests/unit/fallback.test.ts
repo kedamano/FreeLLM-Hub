@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { buildFallbackChain, isRetriable } from '../../src/scheduler/fallback';
+import {
+  AuthenticationError,
+  ProviderError,
+  RateLimitError,
+} from '../../src/shared/errors';
 import type { ProviderModel, ProviderConfig } from '../../src/shared/types';
 
 function createModel(id: string, providerId: string, overrides: Partial<ProviderModel> = {}): ProviderModel {
@@ -111,12 +116,33 @@ describe('fallback', () => {
       expect(isRetriable({ code: 'TIMEOUT' })).toBe(true);
       expect(isRetriable({ code: 'SERVER_ERROR' })).toBe(true);
       expect(isRetriable({ code: 'ALL_FAILED' })).toBe(true);
+      expect(isRetriable({ code: 'NETWORK_ERROR' })).toBe(true);
     });
 
     it('should return false for non-retriable errors', () => {
       expect(isRetriable({ code: 'AUTH_FAILED' })).toBe(false);
       expect(isRetriable({ code: 'MODEL_NOT_FOUND' })).toBe(false);
       expect(isRetriable({ code: 'QUOTA_EXCEEDED' })).toBe(false);
+      expect(isRetriable({ code: 'BAD_REQUEST' })).toBe(false);
+    });
+
+    it('should use the typed error code', () => {
+      expect(isRetriable(new RateLimitError('groq'))).toBe(true);
+      expect(isRetriable(new AuthenticationError('groq'))).toBe(false);
+      expect(
+        isRetriable(new ProviderError('boom', 'groq', 'SERVER_ERROR'))
+      ).toBe(true);
+    });
+
+    it('should treat bare provider errors as retriable', () => {
+      expect(isRetriable(new Error('Chat request failed (500): upstream blew up'))).toBe(true);
+      expect(isRetriable(new Error('fetch failed'))).toBe(true);
+      expect(isRetriable(new Error('request timed out'))).toBe(true);
+    });
+
+    it('should not retry bare auth or bad-request errors', () => {
+      expect(isRetriable(new Error('Chat request failed (401): invalid api key'))).toBe(false);
+      expect(isRetriable(new Error('Chat request failed (404): model not found'))).toBe(false);
     });
 
     it('should return false for non-object errors', () => {

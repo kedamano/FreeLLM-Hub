@@ -25,10 +25,9 @@ const TASK_CAPABILITY_MAP: Record<TaskType, ModelCapability[]> = {
 export function filterCandidates(
   models: ProviderModel[],
   criteria: FilterCriteria
-  // eslint-disable-next-line @typescript-eslint/no-inferrable-types
 ): ProviderModel[] {
-  const requiredCaps = criteria.requiredCapabilities || [
-    ...(criteria.taskType ? TASK_CAPABILITY_MAP[criteria.taskType] || ['chat'] : ['chat']),
+  const requiredCaps: ModelCapability[] = criteria.requiredCapabilities || [
+    ...(criteria.taskType ? TASK_CAPABILITY_MAP[criteria.taskType] || (['chat'] as ModelCapability[]) : (['chat'] as ModelCapability[])),
   ];
 
   return models.filter((model) => {

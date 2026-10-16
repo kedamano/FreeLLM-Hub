@@ -1,4 +1,4 @@
-import type { ProviderModel, TaskType, ModelPricingType } from '../shared/types/index.js';
+import type { ProviderModel, TaskType, ModelPricingType, ModelCapability } from '../shared/types/index.js';
 
 export interface ScoringWeights {
   freeBonus: number;
@@ -20,7 +20,7 @@ const DEFAULT_WEIGHTS: ScoringWeights = {
 
 export interface ModelScoreContext {
   taskType?: TaskType;
-  requiredCapabilities?: string[];
+  requiredCapabilities?: ModelCapability[];
   providerSuccessRates: Map<string, number>;
   providerLatencies: Map<string, number>;
 }
@@ -42,7 +42,7 @@ export function scoreModel(
 
   if (context.requiredCapabilities && context.requiredCapabilities.length > 0) {
     const matched = context.requiredCapabilities.filter((cap) =>
-      model.capabilities.supported.includes(cap as unknown as never)
+      model.capabilities.supported.includes(cap)
     ).length;
     const matchRatio = matched / context.requiredCapabilities.length;
     score += matchRatio * weights.capabilityMatch;

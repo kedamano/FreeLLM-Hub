@@ -1,3 +1,8 @@
+export interface RateLimitLimits {
+  requestsPerMinute?: number;
+  tokensPerMinute?: number;
+}
+
 interface RateLimitState {
   tokens: number;
   lastRefill: number;
@@ -13,26 +18,43 @@ export class RateLimiter {
     private maxRequestsPerMinute: number = 30
   ) {}
 
-  canProceed(key: string, estimatedTokens: number = 100): boolean {
+  canProceed(key: string, estimatedTokens: number = 100, limits?: RateLimitLimits): boolean {
     const state = this.getOrCreateState(key);
     this.refill(state);
 
-    if (state.requestCount >= this.maxRequestsPerMinute) {
+    const maxRequests = limits?.requestsPerMinute ?? this.maxRequestsPerMinute;
+    const maxTokens = limits?.tokensPerMinute ?? this.maxTokensPerMinute;
+
+    if (state.requestCount >= maxRequests) {
       return false;
     }
 
-    if (state.tokens + estimatedTokens > this.maxTokensPerMinute) {
+    if (state.tokens + estimatedTokens > maxTokens) {
       return false;
     }
+
+    state.requestCount += 1;
+    state.tokens += estimatedTokens;
 
     return true;
   }
 
-  record(key: string, tokens: number): void {
+  check(key: string, estimatedTokens: number = 100, limits?: RateLimitLimits): boolean {
     const state = this.getOrCreateState(key);
     this.refill(state);
-    state.tokens += tokens;
-    state.requestCount += 1;
+
+    const maxRequests = limits?.requestsPerMinute ?? this.maxRequestsPerMinute;
+    const maxTokens = limits?.tokensPerMinute ?? this.maxTokensPerMinute;
+
+    return (
+      state.requestCount < maxRequests && state.tokens + estimatedTokens <= maxTokens
+    );
+  }
+
+  record(key: string, deltaTokens: number): void {
+    const state = this.getOrCreateState(key);
+    this.refill(state);
+    state.tokens = Math.max(0, state.tokens + deltaTokens);
   }
 
   getRetryAfter(key: string): number {

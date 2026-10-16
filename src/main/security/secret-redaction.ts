@@ -38,7 +38,7 @@ export function redactObject<T extends Record<string, unknown>>(obj: T): T {
     ) {
       const value = result[key];
       if (typeof value === 'string' && value.length > 4) {
-        result[key] = ('****' as unknown) as T[Extract<keyof T, string>];
+        (result as Record<string, unknown>)[key] = '****';
       }
     }
   }

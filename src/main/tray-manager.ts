@@ -15,7 +15,7 @@ export class TrayManager {
     if (this.tray) return;
 
     const iconPath = resolve(__dirname, '../../resources/icons/tray.png');
-    let icon: Electron.Image;
+    let icon: Electron.NativeImage;
 
     if (existsSync(iconPath)) {
       icon = nativeImage.createFromPath(iconPath);

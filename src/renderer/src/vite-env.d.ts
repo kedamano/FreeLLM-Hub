@@ -4,11 +4,20 @@ interface Window {
   freellm: {
     providers: {
       list: () => Promise<unknown[]>;
-      get: (id: string) => Promise<unknown>;
-      test: (id: string) => Promise<{ success: boolean; error?: string }>;
-      setCredential: (id: string, cred: string) => Promise<{ success: boolean }>;
-      removeCredential: (id: string) => Promise<{ success: boolean }>;
-      toggle: (id: string, enabled: boolean) => Promise<{ success: boolean }>;
+      get: (providerId: string) => Promise<unknown>;
+      test: (providerId: string) => Promise<{ success: boolean; error?: string }>;
+      setCredential: (providerId: string, credential: string) => Promise<{ success: boolean }>;
+      removeCredential: (providerId: string) => Promise<{ success: boolean }>;
+      toggle: (providerId: string, enabled: boolean) => Promise<{ success: boolean }>;
+      updateBaseUrl: (
+        providerId: string,
+        baseUrl: string
+      ) => Promise<{ success: boolean; error?: string }>;
+      discoverModels: (providerId: string) => Promise<{
+        success: boolean;
+        models?: unknown[];
+        error?: string;
+      }>;
     };
     models: {
       list: () => Promise<unknown[]>;
@@ -34,7 +43,13 @@ interface Window {
     };
     gateway: {
       status: () => Promise<unknown>;
-      port: () => Promise<number>;
+      getToken: () => Promise<string>;
+      generateToken: () => Promise<string>;
+      updateConfig: (config: {
+        host?: string;
+        port?: number;
+        authEnabled?: boolean;
+      }) => Promise<unknown>;
     };
     app: {
       version: () => Promise<string>;

@@ -14,7 +14,6 @@ export function createLMStudioAdapter(baseUrl?: string): OpenAICompatibleAdapter
         id: 'local-model',
         providerId: 'lmstudio',
         displayName: 'LM Studio 本地模型',
-        description: '当前 LM Studio 中加载的模型',
         capabilities: {
           supported: ['chat', 'completion', 'streaming'],
           contextWindow: 8192,
@@ -26,10 +25,8 @@ export function createLMStudioAdapter(baseUrl?: string): OpenAICompatibleAdapter
         pricing: { type: 'local', currency: 'USD', notes: '本地免费推理' },
         status: 'available',
         discoveredAt: new Date().toISOString(),
+        description: '通过 LM Studio 的 OpenAI 兼容接口在本地运行模型',
       },
     ],
-    metadata: {
-      description: '通过 LM Studio 的 OpenAI 兼容接口在本地运行模型',
-    },
   });
 }

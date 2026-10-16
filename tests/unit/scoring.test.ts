@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { scoreModel, rankModels } from '../../src/scheduler/scoring';
-import type { ProviderModel, ModelScoreContext } from '../../src/shared/types';
+import type { ProviderModel } from '../../src/shared/types';
+import type { ModelScoreContext } from '../../src/scheduler/scoring';
 
 function createMockModel(overrides: Partial<ProviderModel> = {}): ProviderModel {
   return {

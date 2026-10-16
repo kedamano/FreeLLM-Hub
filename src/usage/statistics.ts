@@ -1,79 +1,93 @@
 import { getDatabase } from '../core/database/database.js';
+import { mapCallLogRow, type CallLogRow } from './usage-recorder.js';
 import type { DashboardStats, ProviderUsageStat, ProviderId } from '../shared/types/index.js';
+
+export interface ProviderHealth {
+  providerId: ProviderId;
+  successRate: number;
+  avgLatencyMs: number;
+}
 
 export function getDashboardStats(): DashboardStats {
   const db = getDatabase();
 
-  const totalRow = db
-    .prepare('SELECT COUNT(*) as count FROM call_logs')
-    .get() as { count: number };
-
-  const successRow = db
-    .prepare("SELECT COUNT(*) as count FROM call_logs WHERE status = 'success'")
-    .get() as { count: number };
-
-  const tokenRow = db
+  const totalsRow = db
     .prepare(
-      'SELECT COALESCE(SUM(prompt_tokens), 0) as prompt, COALESCE(SUM(completion_tokens), 0) as completion FROM call_logs'
+      `SELECT COUNT(*) as total,
+              SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+              COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0) as tokens
+       FROM call_logs`
     )
-    .get() as { prompt: number; completion: number };
+    .get() as { total: number; success: number | null; tokens: number };
 
   const statusRows = db
     .prepare(
-      'SELECT provider_id, COUNT(*) as total, SUM(CASE WHEN status = \'success\' THEN 1 ELSE 0 END) as success FROM call_logs GROUP BY provider_id'
+      `SELECT provider_id,
+              COUNT(*) as total,
+              SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+              COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0) as tokens,
+              AVG(duration_ms) as avg_duration
+       FROM call_logs GROUP BY provider_id`
     )
-    .all() as Array<{ provider_id: string; total: number; success: number }>;
+    .all() as Array<{
+      provider_id: string;
+      total: number;
+      success: number | null;
+      tokens: number | null;
+      avg_duration: number | null;
+    }>;
 
   const recentRows = db
     .prepare('SELECT * FROM call_logs ORDER BY timestamp DESC LIMIT 20')
-    .all() as Array<{
-      id: string;
-      request_id: string;
-      timestamp: string;
-      provider_id: string;
-      model_id: string;
-      task_type: string | null;
-      status: string;
-      duration_ms: number;
-      prompt_tokens: number;
-      completion_tokens: number;
-      error_message: string | null;
-    }>;
+    .all() as CallLogRow[];
 
-  const totalRequests = totalRow.count;
-  const successRate = totalRequests > 0 ? successRow.count / totalRequests : 0;
+  const totalRequests = totalsRow.total;
+  const successRate = totalRequests > 0 ? (totalsRow.success || 0) / totalRequests : 0;
 
   const providerStats: ProviderUsageStat[] = statusRows.map((row) => ({
     providerId: row.provider_id as ProviderId,
     providerName: row.provider_id,
     requestCount: row.total,
-    tokenCount: 0,
-    successCount: row.success,
-    errorCount: row.total - row.success,
+    tokenCount: row.tokens || 0,
+    successCount: row.success || 0,
+    errorCount: row.total - (row.success || 0),
   }));
 
   return {
     totalRequests,
     successRate,
-    totalTokensUsed: tokenRow.prompt + tokenRow.completion,
+    totalTokensUsed: totalsRow.tokens,
     totalCostSaved: 0,
     activeProviders: providerStats.length,
     availableModels: 0,
-    recentCalls: recentRows.map((r) => ({
-      id: r.id,
-      requestId: r.request_id,
-      timestamp: r.timestamp,
-      providerId: r.provider_id as ProviderId,
-      modelId: r.model_id,
-      taskType: r.task_type as never,
-      status: r.status as never,
-      durationMs: r.duration_ms,
-      promptTokens: r.prompt_tokens,
-      completionTokens: r.completion_tokens,
-      errorMessage: r.error_message || undefined,
-    })),
+    recentCalls: recentRows.map(mapCallLogRow),
     providerStats,
   };
+}
+
+export function getProviderHealth(limit: number = 200): ProviderHealth[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT provider_id,
+              COUNT(*) as total,
+              SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+              AVG(duration_ms) as avg_duration
+       FROM (SELECT provider_id, status, duration_ms FROM call_logs ORDER BY timestamp DESC LIMIT ?)
+       GROUP BY provider_id`
+    )
+    .all(limit) as Array<{
+      provider_id: string;
+      total: number;
+      success: number | null;
+      avg_duration: number | null;
+    }>;
+
+  return rows.map((row) => ({
+    providerId: row.provider_id as ProviderId,
+    successRate: row.total > 0 ? (row.success || 0) / row.total : 0,
+    avgLatencyMs: row.avg_duration || 0,
+  }));
 }
 
 export function getProviderStatistics(providerId: ProviderId): ProviderUsageStat {

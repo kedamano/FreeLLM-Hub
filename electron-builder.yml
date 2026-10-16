@@ -3,32 +3,27 @@ productName: FreeLLM Hub
 copyright: Copyright (c) 2026 FreeLLM Hub Team
 
 directories:
-  output: release
+  output: C:/temp/freellm-release
   buildResources: resources
 
 files:
   - dist/**/*
   - package.json
+  - resources/**/*
   - "!**/*.map"
+
+asar: false
+
+forceCodeSigning: false
 
 win:
   target:
-    - target: nsis
-      arch: [x64]
     - target: portable
       arch: [x64]
   artifactName: ${productName}-${version}-${arch}.${ext}
   icon: resources/icons/icon.ico
 
-nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
-  createDesktopShortcut: true
-  createStartMenuShortcut: true
-  shortcutName: FreeLLM Hub
-
 portable:
   artifactName: ${productName}-${version}-portable.${ext}
 
-asar: true
 compression: maximum

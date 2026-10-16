@@ -9,6 +9,13 @@ export interface UseIPCReturn<T> {
 
 type IPCCall<T> = () => Promise<T>;
 
+export type FreeLLMApi = Window['freellm'];
+
+export function getFreellmApi(): FreeLLMApi | null {
+  if (typeof window === 'undefined') return null;
+  return (window as { freellm?: FreeLLMApi }).freellm ?? null;
+}
+
 export function useIPC<T>(ipcCall: IPCCall<T>, deps: unknown[] = []): UseIPCReturn<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);

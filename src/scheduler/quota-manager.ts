@@ -52,7 +52,6 @@ export class QuotaManager {
     tokens: number = 0,
     modelId?: string
   ): void {
-    const key = this.getKey(providerId, modelId);
     const state = this.getOrCreateState(providerId, modelId);
     state.requestCount += requests;
     state.tokenCount += tokens;
@@ -121,17 +120,27 @@ export class QuotaManager {
     const key = this.getKey(providerId, modelId);
     let state = this.quotas.get(key);
     if (!state) {
-      const now = new Date();
-      const periodEnd = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      state = {
-        providerId,
-        requestCount: 0,
-        tokenCount: 0,
-        periodStart: now.toISOString(),
-        periodEnd: periodEnd.toISOString(),
-      };
+      state = this.createState(providerId);
+      this.quotas.set(key, state);
+      return state;
+    }
+
+    if (new Date(state.periodEnd).getTime() <= Date.now()) {
+      state = this.createState(providerId);
       this.quotas.set(key, state);
     }
     return state;
+  }
+
+  private createState(providerId: ProviderId): QuotaState {
+    const now = new Date();
+    const periodEnd = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    return {
+      providerId,
+      requestCount: 0,
+      tokenCount: 0,
+      periodStart: now.toISOString(),
+      periodEnd: periodEnd.toISOString(),
+    };
   }
 }

@@ -1,162 +1,309 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { ServerIcon, CheckIcon } from '../components/Icons';
+import { useIPC, getFreellmApi } from '../hooks/useIPC';
+import { LoadingState } from '../components/ErrorBoundary';
+
+interface GatewaySettings {
+  host: string;
+  port: number;
+  authEnabled: boolean;
+}
+
+interface GatewaySnapshot {
+  host: string;
+  port: number;
+  authEnabled: boolean;
+  token: string;
+}
 
 export default function SettingsPage() {
-  const [gatewayHost, setGatewayHost] = useState('127.0.0.1');
-  const [gatewayPort, setGatewayPort] = useState('0');
-  const [logLevel, setLogLevel] = useState('info');
-  const [autoFallback, setAutoFallback] = useState(true);
-  const [theme, setTheme] = useState('system');
-  const [dataPath, setDataPath] = useState('');
-  const [version, setVersion] = useState('0.1.0');
+  const [gateway, setGateway] = useState<GatewaySettings>({
+    host: '127.0.0.1',
+    port: 3000,
+    authEnabled: false,
+  });
+
+  const [gatewayToken, setGatewayToken] = useState('');
+  const [tokenVisible, setTokenVisible] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [showAgentHelp, setShowAgentHelp] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const savedTimer = useRef<number | null>(null);
+  const copiedTimer = useRef<number | null>(null);
+
+  const { data: snapshot, refetch } = useIPC<GatewaySnapshot | null>(async () => {
+    const api = getFreellmApi();
+    if (!api) return null;
+    const status = (await api.gateway.status()) as GatewaySnapshot | null;
+    const token = await api.gateway.getToken().catch(() => '');
+    if (!status) return null;
+    return {
+      host: status.host,
+      port: status.port,
+      authEnabled: status.authEnabled,
+      token: token || '',
+    };
+  });
 
   useEffect(() => {
-    loadSettings();
+    if (snapshot) {
+      setGateway({
+        host: snapshot.host,
+        port: snapshot.port,
+        authEnabled: snapshot.authEnabled,
+      });
+      setGatewayToken(snapshot.token);
+      setLoadError(null);
+    }
+  }, [snapshot]);
+
+  useEffect(() => {
+    setLoading(false);
+    return () => {
+      if (savedTimer.current !== null) window.clearTimeout(savedTimer.current);
+      if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
+    };
   }, []);
 
-  async function loadSettings() {
-    try {
-      const v = await (
-        window as unknown as { freellm: { app: { version: () => Promise<string> } } }
-      ).freellm.app.version();
-      setVersion(v);
-    } catch {
-      // Use default
+  async function handleSaveGateway() {
+    const api = getFreellmApi();
+    if (!api) {
+      setLoadError('未连接后端服务，无法保存配置');
+      return;
     }
-
     try {
-      const dp = await (
-        window as unknown as { freellm: { app: { dataPath: () => Promise<string> } } }
-      ).freellm.app.dataPath();
-      setDataPath(dp);
-    } catch {
-      // Use default
+      await api.gateway.updateConfig(gateway);
+      setLoadError(null);
+      setSaved(true);
+      if (savedTimer.current !== null) window.clearTimeout(savedTimer.current);
+      savedTimer.current = window.setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : '保存失败');
     }
   }
 
-  async function handleSave() {
+  const handleGenerateToken = useCallback(async () => {
+    const api = getFreellmApi();
+    if (!api) return;
     try {
-      const freellm = (window as unknown as {
-        freellm: {
-          settings: { set: (key: string, value: string) => Promise<{ success: boolean }> };
-        };
-      }).freellm;
-      await freellm.settings.set('logLevel', logLevel);
-      await freellm.settings.set('theme', theme);
-      await freellm.settings.set('autoFallback', String(autoFallback));
-      alert('设置已保存');
+      const token = await api.gateway.generateToken();
+      setGatewayToken(token);
     } catch {
-      alert('无法连接到后端，设置未保存');
+      // keep existing token
     }
+  }, []);
+
+  const copyToClipboard = useCallback((text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopied(false), 2000);
+  }, []);
+
+  const gatewayUrl = `http://${gateway.host}:${gateway.port}`;
+  const agentBaseUrl = `${gatewayUrl}/v1`;
+
+  if (loading) {
+    return <LoadingState />;
+  }
+
+  return (
+    <div className="max-w-3xl">
+      <div className="mb-6 flex flex-col">
+        <h2 className="block text-xl font-bold text-surface-900 tracking-tight">设置</h2>
+        <p className="block text-sm text-surface-500 mt-1">网关服务与认证配置</p>
+      </div>
+
+      {loadError && (
+        <div className="mb-4 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-md text-xs text-amber-700 flex items-center justify-between">
+          <span>{loadError}</span>
+          <button onClick={refetch} className="btn-ghost text-xs shrink-0">
+            重试
+          </button>
+        </div>
+      )}
+
+      {/* Gateway Configuration */}
+      <div className="card card-hover mb-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <ServerIcon size={16} className="text-primary-500" />
+            <h3 className="text-sm font-semibold text-surface-800">网关服务</h3>
+          </div>
+          {saved && (
+            <span className="text-xs text-success font-medium flex items-center gap-1">
+              <CheckIcon size={12} /> 已保存
+            </span>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          {/* URL Display */}
+          <div>
+            <label className="label">网关地址</label>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 px-3 py-2 bg-surface-50 rounded-lg font-mono text-sm text-surface-700 border border-surface-100 select-all">
+                {gatewayUrl}
+              </div>
+              <button
+                onClick={() => copyToClipboard(agentBaseUrl)}
+                className={`px-3 py-2 rounded-lg text-xs font-medium transition-all shrink-0 ${
+                  copied
+                    ? 'bg-success/10 text-success'
+                    : 'bg-surface-50 text-surface-600 hover:bg-surface-100 border border-surface-200'
+                }`}
+              >
+                {copied ? '已复制' : '复制 Base URL'}
+              </button>
+            </div>
+            <p className="text-[11px] text-surface-400 mt-1">在 other agent 中设置 OPENAI_BASE_URL 为此值 + /v1</p>
+          </div>
+
+          {/* Auth Toggle */}
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="block text-sm font-medium text-surface-700">启用认证</span>
+              <p className="text-[11px] text-surface-400 mt-0.5">开启后需要 Token 才能调用网关</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={gateway.authEnabled}
+              aria-label="启用认证"
+              onClick={() => setGateway({ ...gateway, authEnabled: !gateway.authEnabled })}
+              className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${
+                gateway.authEnabled ? 'bg-primary-500' : 'bg-surface-300'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                  gateway.authEnabled ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Token Management */}
+          {gateway.authEnabled && (
+            <div>
+              <label className="label">访问 Token</label>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 px-3 py-2 bg-surface-50 rounded-lg font-mono text-sm text-surface-700 border border-surface-100 overflow-hidden">
+                  {tokenVisible ? gatewayToken || '尚未生成' : '••••••••••••••••••••••••••••••••••'}
+                </div>
+                <button
+                  onClick={() => setTokenVisible(!tokenVisible)}
+                  className="btn-secondary text-xs"
+                >
+                  {tokenVisible ? '隐藏' : '显示'}
+                </button>
+              </div>
+              <button onClick={handleGenerateToken} className="btn-secondary text-xs mt-2">
+                重新生成 Token
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Agent Configuration Help */}
+      <div className="card card-hover mb-4">
+        {showAgentHelp ? (
+          <>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-surface-800">Agent 配置参考</h3>
+              <button onClick={() => setShowAgentHelp(false)} className="btn-ghost text-xs">
+                收起
+              </button>
+            </div>
+            <div className="space-y-3">
+              <AgentConfigBlock
+                name="环境变量（通用）"
+                code={`OPENAI_BASE_URL=${agentBaseUrl}\n${gateway.authEnabled ? `OPENAI_API_KEY=${gatewayToken}` : '# 无需 API key'}`}
+              />
+              <AgentConfigBlock
+                name="Claude Code (.claude/settings.json)"
+                code={JSON.stringify({
+                  env: {
+                    OPENAI_BASE_URL: agentBaseUrl,
+                    ...(gateway.authEnabled ? { OPENAI_API_KEY: gatewayToken } : {}),
+                  },
+                }, null, 2)}
+              />
+              <AgentConfigBlock
+                name="OpenAI Codex CLI"
+                code={`OPENAI_BASE_URL=${agentBaseUrl}\n${gateway.authEnabled ? `OPENAI_API_KEY=${gatewayToken}` : ''}`}
+              />
+              <AgentConfigBlock
+                name="Cursor"
+                code={`OPENAI_BASE_URL=${agentBaseUrl}\n${gateway.authEnabled ? `OPENAI_API_KEY=${gatewayToken}` : ''}`}
+              />
+              <AgentConfigBlock
+                name="Continue.dev (config.json)"
+                code={JSON.stringify({
+                  models: [{
+                    title: 'FreeLLM Hub',
+                    provider: 'openai',
+                    model: 'auto',
+                    apiBase: agentBaseUrl,
+                    ...(gateway.authEnabled ? { apiKey: gatewayToken } : {}),
+                  }],
+                }, null, 2)}
+              />
+            </div>
+          </>
+        ) : (
+          <button
+            onClick={() => setShowAgentHelp(true)}
+            className="w-full text-left flex items-center justify-between py-1"
+          >
+            <h3 className="text-sm font-semibold text-surface-800">Agent 配置参考</h3>
+            <span className="text-xs text-primary-600 font-medium">展开查看</span>
+          </button>
+        )}
+      </div>
+
+      {/* Save Button */}
+      <div className="flex justify-end">
+        <button onClick={handleSaveGateway} className="btn-primary">
+          保存配置
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AgentConfigBlock({ name, code }: { name: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    };
+  }, []);
+
+  function copy() {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setCopied(false), 2000);
   }
 
   return (
     <div>
-      <div className="mb-6">
-        <h2 className="text-xl font-bold text-surface-900">设置</h2>
-        <p className="text-sm text-surface-500 mt-1">应用配置和偏好</p>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-medium text-surface-600">{name}</span>
+        <button onClick={copy} className="text-[11px] text-primary-600 font-medium hover:text-primary-700">
+          {copied ? '已复制' : '复制'}
+        </button>
       </div>
-
-      <div className="max-w-2xl space-y-6">
-        <div className="card">
-          <h3 className="text-sm font-semibold text-surface-800 mb-4">网关设置</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="label">监听地址</label>
-              <input
-                type="text"
-                value={gatewayHost}
-                onChange={(e) => setGatewayHost(e.target.value)}
-                className="input-field"
-                placeholder="127.0.0.1"
-              />
-            </div>
-            <div>
-              <label className="label">端口</label>
-              <input
-                type="number"
-                value={gatewayPort}
-                onChange={(e) => setGatewayPort(e.target.value)}
-                className="input-field"
-                placeholder="0 = 自动分配"
-              />
-            </div>
-          </div>
-          <p className="text-xs text-surface-400 mt-2">
-            网关为外部应用提供 OpenAI 兼容的 API 接口。端口设为 0 可自动分配空闲端口。
-          </p>
-        </div>
-
-        <div className="card">
-          <h3 className="text-sm font-semibold text-surface-800 mb-4">调度器</h3>
-          <div className="space-y-3">
-            <label className="flex items-center justify-between">
-              <div>
-                <span className="text-sm text-surface-700">自动故障切换</span>
-                <p className="text-xs text-surface-400">当当前模型不可用时自动切换</p>
-              </div>
-              <input
-                type="checkbox"
-                checked={autoFallback}
-                onChange={(e) => setAutoFallback(e.target.checked)}
-                className="w-4 h-4 rounded border-surface-300 text-primary-600 focus:ring-primary-500"
-              />
-            </label>
-          </div>
-        </div>
-
-        <div className="card">
-          <h3 className="text-sm font-semibold text-surface-800 mb-4">通用</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="label">日志级别</label>
-              <select
-                value={logLevel}
-                onChange={(e) => setLogLevel(e.target.value)}
-                className="input-field"
-              >
-                <option value="debug">Debug</option>
-                <option value="info">Info</option>
-                <option value="warn">Warn</option>
-                <option value="error">Error</option>
-              </select>
-            </div>
-            <div>
-              <label className="label">主题</label>
-              <select
-                value={theme}
-                onChange={(e) => setTheme(e.target.value)}
-                className="input-field"
-              >
-                <option value="system">跟随系统</option>
-                <option value="light">浅色</option>
-                <option value="dark">深色</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <div className="card">
-          <h3 className="text-sm font-semibold text-surface-800 mb-4">关于</h3>
-          <div className="space-y-2 text-sm text-surface-600">
-            <div className="flex justify-between">
-              <span>版本</span>
-              <span className="font-mono text-surface-800">{version}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>数据目录</span>
-              <span className="font-mono text-xs text-surface-400 truncate max-w-xs">
-                {dataPath || '默认路径'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex justify-end">
-          <button onClick={handleSave} className="btn-primary">
-            保存设置
-          </button>
-        </div>
-      </div>
+      <pre className="bg-surface-900 text-surface-200 rounded-lg p-3 text-[11px] font-mono overflow-x-auto leading-relaxed">
+        {code}
+      </pre>
     </div>
   );
 }

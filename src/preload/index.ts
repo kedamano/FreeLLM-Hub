@@ -11,6 +11,10 @@ const api = {
       ipcRenderer.invoke('providers:remove-credential', providerId),
     toggle: (providerId: string, enabled: boolean) =>
       ipcRenderer.invoke('providers:toggle', providerId, enabled),
+    updateBaseUrl: (providerId: string, baseUrl: string) =>
+      ipcRenderer.invoke('providers:update-baseurl', providerId, baseUrl),
+    discoverModels: (providerId: string) =>
+      ipcRenderer.invoke('providers:discover-models', providerId),
   },
 
   models: {
@@ -43,8 +47,11 @@ const api = {
   },
 
   gateway: {
-    status: () => ipcRenderer.invoke('gateway:status'),
-    port: () => ipcRenderer.invoke('gateway:port'),
+    status: () => ipcRenderer.invoke('gateway:getStatus'),
+    getToken: () => ipcRenderer.invoke('gateway:getToken'),
+    generateToken: () => ipcRenderer.invoke('gateway:generateToken'),
+    updateConfig: (config: { host?: string; port?: number; authEnabled?: boolean }) =>
+      ipcRenderer.invoke('gateway:updateConfig', config),
   },
 
   app: {

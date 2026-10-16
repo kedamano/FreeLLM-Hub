@@ -49,6 +49,41 @@ describe('CircuitBreaker', () => {
     expect(breaker.isClosed('provider1')).toBe(true);
   });
 
+  it('should cap concurrent requests in half-open', async () => {
+    breaker.recordFailure('provider1');
+    breaker.recordFailure('provider1');
+    breaker.recordFailure('provider1');
+
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(breaker.canExecute('provider1')).toBe(true);
+    expect(breaker.canExecute('provider1')).toBe(false);
+  });
+
+  it('should free a half-open slot on release', async () => {
+    breaker.recordFailure('provider1');
+    breaker.recordFailure('provider1');
+    breaker.recordFailure('provider1');
+
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(breaker.canExecute('provider1')).toBe(true);
+    breaker.release('provider1');
+    expect(breaker.canExecute('provider1')).toBe(true);
+  });
+
+  it('should reopen immediately on a half-open failure', async () => {
+    breaker.recordFailure('provider1');
+    breaker.recordFailure('provider1');
+    breaker.recordFailure('provider1');
+
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(breaker.canExecute('provider1')).toBe(true);
+    breaker.recordFailure('provider1');
+    expect(breaker.canExecute('provider1')).toBe(false);
+  });
+
   it('should reset state', () => {
     breaker.recordFailure('provider1');
     breaker.reset('provider1');

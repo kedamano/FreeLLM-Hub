@@ -10,6 +10,7 @@ import type {
 } from '../contracts.js';
 import { estimateTokenCount } from '../../../shared/utils/index.js';
 import type { ModelCapability } from '../../../shared/types/index.js';
+import { mapHttpError, mapNetworkError, withRequestTimeout } from '../request-errors.js';
 
 export interface OllamaConfig {
   baseUrl?: string;
@@ -30,6 +31,7 @@ export class OllamaAdapter implements ProviderAdapter {
 
   private baseUrl: string;
   private knownModels: ProviderModel[] = [];
+  private modelsRequest: Promise<ProviderModel[]> | null = null;
 
   constructor(config?: OllamaConfig) {
     this.baseUrl = (config?.baseUrl || 'http://localhost:11434').replace(/\/$/, '');
@@ -79,6 +81,14 @@ export class OllamaAdapter implements ProviderAdapter {
   }
 
   async listModels(): Promise<ProviderModel[]> {
+    if (this.modelsRequest) return this.modelsRequest;
+    this.modelsRequest = this.fetchModels().finally(() => {
+      this.modelsRequest = null;
+    });
+    return this.modelsRequest;
+  }
+
+  private async fetchModels(): Promise<ProviderModel[]> {
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`, {
         method: 'GET',
@@ -95,7 +105,7 @@ export class OllamaAdapter implements ProviderAdapter {
         const models: ProviderModel[] = data.models.map((m) => {
           const known = this.knownModels.find((k) => k.id === m.name);
           return known
-            ? { ...known, status: 'available', lastCheckedAt: new Date().toISOString() }
+            ? { ...known, status: 'available' as const, lastCheckedAt: new Date().toISOString() }
             : {
                 id: m.name,
                 providerId: 'ollama',
@@ -137,24 +147,29 @@ export class OllamaAdapter implements ProviderAdapter {
   ): Promise<{ content: string; usage: GatewayUsage; finishReason: string }> {
     const ollamaMessages = this.convertMessages(messages, options?.systemPrompt);
 
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: ollamaMessages,
-        stream: false,
-        options: {
-          num_predict: options?.maxTokens,
-          temperature: options?.temperature,
-        },
-      }),
-      signal: options?.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: ollamaMessages,
+          stream: false,
+          options: {
+            num_predict: options?.maxTokens,
+            temperature: options?.temperature,
+          },
+        }),
+        signal: withRequestTimeout(options?.signal),
+      });
+    } catch (err) {
+      throw mapNetworkError(this.providerId, err);
+    }
 
     if (!response.ok) {
       const err = await response.text();
-      throw new Error(`Ollama request failed (${response.status}): ${err}`);
+      throw mapHttpError(this.providerId, response.status, err);
     }
 
     const result = (await response.json()) as {
@@ -184,24 +199,29 @@ export class OllamaAdapter implements ProviderAdapter {
   ): AsyncIterable<StreamChunk> {
     const ollamaMessages = this.convertMessages(messages, options?.systemPrompt);
 
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: ollamaMessages,
-        stream: true,
-        options: {
-          num_predict: options?.maxTokens,
-          temperature: options?.temperature,
-        },
-      }),
-      signal: options?.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: ollamaMessages,
+          stream: true,
+          options: {
+            num_predict: options?.maxTokens,
+            temperature: options?.temperature,
+          },
+        }),
+        signal: withRequestTimeout(options?.signal),
+      });
+    } catch (err) {
+      throw mapNetworkError(this.providerId, err);
+    }
 
     if (!response.ok || !response.body) {
       const err = await response.text().catch(() => 'Unknown error');
-      throw new Error(`Ollama stream failed (${response.status}): ${err}`);
+      throw mapHttpError(this.providerId, response.status, err);
     }
 
     const reader = response.body.getReader();

@@ -18,6 +18,7 @@ export interface GatewayServerOptions {
   host?: string;
   port?: number;
   scheduler: Scheduler;
+  authValidator?: (token: string) => boolean;
 }
 
 export class GatewayServer {
@@ -25,11 +26,13 @@ export class GatewayServer {
   private scheduler: Scheduler;
   private host: string;
   private port: number;
+  private authValidator?: (token: string) => boolean;
 
   constructor(options: GatewayServerOptions) {
     this.scheduler = options.scheduler;
     this.host = options.host || '127.0.0.1';
     this.port = options.port || 0;
+    this.authValidator = options.authValidator;
   }
 
   async start(): Promise<{ host: string; port: number }> {
@@ -45,6 +48,29 @@ export class GatewayServer {
     });
 
     await this.app.register(cors, { origin: true });
+
+    // Register auth middleware if validator is provided
+    if (this.authValidator) {
+      this.app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
+        // Skip auth for health check
+        if (request.url === '/health' || request.url?.startsWith('/health')) return;
+
+        const authHeader = request.headers.authorization;
+        if (!authHeader) {
+          reply.status(401).send({
+            error: { message: 'Missing authorization header. Use: Bearer <token>', type: 'auth_required' },
+          });
+          return;
+        }
+
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+        if (!this.authValidator!(token)) {
+          reply.status(403).send({
+            error: { message: 'Invalid token', type: 'auth_failed' },
+          });
+        }
+      });
+    }
 
     this.registerRoutes();
     registerCommonMiddleware(this.app);
@@ -68,6 +94,14 @@ export class GatewayServer {
 
   getPort(): number {
     return this.port;
+  }
+
+  getHost(): string {
+    return this.host;
+  }
+
+  getUrl(): string {
+    return `http://${this.host}:${this.port}`;
   }
 
   private registerRoutes(): void {
@@ -103,6 +137,41 @@ export class GatewayServer {
       }
 
       return { object: 'list', data: models };
+    });
+
+    this.app.get<{
+      Querystring: { providerId?: string };
+    }>('/admin/discover-models', async (request) => {
+      const registry = getProviderRegistry();
+      const providerId = request.query.providerId;
+
+      if (providerId) {
+        const adapter = registry.get(providerId);
+        if (!adapter) return { success: false, error: 'Provider not found', models: [] };
+        const models = await adapter.listModels();
+        return { success: true, providerId, modelsFound: models.length, models };
+      }
+
+      const adapters = registry.getAll();
+      const results: Array<{ providerId: string; modelsFound: number; error?: string }> = [];
+      const allModels: Array<Record<string, unknown>> = [];
+
+      for (const adapter of adapters) {
+        if (!adapter.getProviderConfig().isEnabled) continue;
+        try {
+          const pmodels = await adapter.listModels();
+          results.push({ providerId: adapter.providerId, modelsFound: pmodels.length });
+          allModels.push(...pmodels.map((m) => ({ ...m, provider: m.providerId })));
+        } catch (err) {
+          results.push({
+            providerId: adapter.providerId,
+            modelsFound: 0,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      return { success: true, totalModels: allModels.length, results, models: allModels };
     });
 
     this.app.post<{
@@ -192,29 +261,29 @@ export class GatewayServer {
       };
 
       return reply.send(response);
-      } catch (err) {
-        recordCall({
-          requestId: request.requestId,
-          providerId: 'unknown' as ProviderId,
-          modelId: 'unknown',
-          taskType: request.taskType,
-          status: 'error',
-          durationMs: Date.now() - startTime,
-          promptTokens: 0,
-          completionTokens: 0,
-          errorMessage: err instanceof Error ? err.message : String(err),
-        });
+    } catch (err) {
+      recordCall({
+        requestId: request.requestId,
+        providerId: 'unknown' as ProviderId,
+        modelId: 'unknown',
+        taskType: request.taskType,
+        status: 'error',
+        durationMs: Date.now() - startTime,
+        promptTokens: 0,
+        completionTokens: 0,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
 
-        const statusCode = getErrorStatusCode(err);
-        return reply.status(statusCode).send({
-          error: {
-            message: getSafeErrorMessage(err),
-            type: getErrorType(err),
-            code: getErrorCode(err),
-          },
-        });
-      }
+      const statusCode = getErrorStatusCode(err);
+      return reply.status(statusCode).send({
+        error: {
+          message: getSafeErrorMessage(err),
+          type: getErrorType(err),
+          code: getErrorCode(err),
+        },
+      });
     }
+  }
 
   private handleStreamRequest(
     reply: import('fastify').FastifyReply,
@@ -324,4 +393,14 @@ function getErrorCode(err: unknown): string {
   if (err instanceof AuthenticationError) return 'AUTH_FAILED';
   if (err instanceof AllProvidersFailedError) return 'ALL_FAILED';
   return 'SERVER_ERROR';
+}
+
+/** Generate a secure gateway access token */
+export function generateGatewayToken(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = 'fh_';
+  for (let i = 0; i < 32; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
 }

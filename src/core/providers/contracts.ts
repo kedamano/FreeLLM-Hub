@@ -1,10 +1,20 @@
 import type {
+  ProviderConfig,
+  ProviderModel,
+  GatewayMessage,
+  GatewayUsage,
+  ModelCapability,
+} from '../../shared/types/index.js';
+
+// Re-export shared types for adapter consumers
+export type {
   GatewayRequest,
   ModelCapability,
   ProviderConfig,
   ProviderModel,
   GatewayMessage,
   GatewayUsage,
+  GatewayToolCall,
 } from '../../shared/types/index.js';
 
 export interface StreamChunk {

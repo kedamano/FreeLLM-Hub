@@ -1,4 +1,5 @@
 import type { Scheduler } from '../../scheduler/scheduler.js';
+import type { IpcMainInvokeEvent } from 'electron';
 
 export function registerSchedulerIpc(scheduler: Scheduler): void {
   const { ipcMain } = require('electron');
@@ -15,7 +16,7 @@ export function registerSchedulerIpc(scheduler: Scheduler): void {
     return { providers };
   });
 
-  ipcMain.handle('scheduler:reset-circuit', async (_event, providerId: string) => {
+  ipcMain.handle('scheduler:reset-circuit', async (_e: IpcMainInvokeEvent, providerId: string) => {
     scheduler.resetCircuit(providerId);
     return { success: true };
   });

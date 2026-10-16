@@ -50,16 +50,48 @@ export function recordCall(record: CallRecord): void {
   );
 }
 
+export interface CallLogRow {
+  id: string;
+  request_id: string;
+  timestamp: string;
+  provider_id: string;
+  model_id: string;
+  task_type: string | null;
+  status: string;
+  duration_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  error_message: string | null;
+}
+
+export function mapCallLogRow(row: CallLogRow): CallLog {
+  return {
+    id: row.id,
+    requestId: row.request_id,
+    timestamp: row.timestamp,
+    providerId: row.provider_id,
+    modelId: row.model_id,
+    taskType: (row.task_type ?? undefined) as CallLog['taskType'],
+    status: (['success', 'error', 'timeout', 'rate_limited'].includes(row.status)
+      ? row.status
+      : 'error') as CallLog['status'],
+    durationMs: Number(row.duration_ms ?? 0),
+    promptTokens: Number(row.prompt_tokens ?? 0),
+    completionTokens: Number(row.completion_tokens ?? 0),
+    errorMessage: row.error_message ?? undefined,
+  };
+}
+
 export function getRecentCalls(limit: number = 100): CallLog[] {
   const db = getDatabase();
   const stmt = db.prepare('SELECT * FROM call_logs ORDER BY timestamp DESC LIMIT ?');
-  return stmt.all(limit) as CallLog[];
+  return (stmt.all(limit) as CallLogRow[]).map(mapCallLogRow);
 }
 
 export function getCallsByProvider(providerId: ProviderId, limit: number = 100): CallLog[] {
   const db = getDatabase();
   const stmt = db.prepare('SELECT * FROM call_logs WHERE provider_id = ? ORDER BY timestamp DESC LIMIT ?');
-  return stmt.all(providerId, limit) as CallLog[];
+  return (stmt.all(providerId, limit) as CallLogRow[]).map(mapCallLogRow);
 }
 
 export function deleteOldLogs(beforeTime: string): number {

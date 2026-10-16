@@ -9,8 +9,7 @@ export function createGoogleGeminiAdapter(apiKey?: string): OpenAICompatibleAdap
     baseUrl,
     authType: 'api-key',
     credentialId: apiKey ? 'google-key' : undefined,
-    defaultHeaders: {},
-    settings: { apiKey },
+    defaultHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     models: [
       {
         id: 'gemini-2.0-flash',

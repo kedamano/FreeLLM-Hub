@@ -38,9 +38,9 @@ describe('candidate-filter', () => {
 
   it('should filter by required capabilities', () => {
     const result = filterCandidates(models, {
-      requiredCapabilities: ['json-mode'] as never[],
+      requiredCapabilities: ['json-mode'],
     });
-    expect(result.every((m) => m.capabilities.supported.includes('json-mode' as never))).toBe(true);
+    expect(result.every((m) => m.capabilities.supported.includes('json-mode'))).toBe(true);
   });
 
   it('should prefer free when specified', () => {

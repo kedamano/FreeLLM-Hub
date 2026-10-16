@@ -11,7 +11,7 @@ const DEFAULT_OPTIONS: RetryPolicyOptions = {
   baseDelayMs: 1000,
   maxDelayMs: 30000,
   backoffMultiplier: 2,
-  retryableErrors: ['RATE_LIMITED', 'TIMEOUT', 'SERVER_ERROR', 'ALL_FAILED'],
+  retryableErrors: ['RATE_LIMITED', 'TIMEOUT', 'SERVER_ERROR', 'ALL_FAILED', 'NETWORK_ERROR'],
 };
 
 export class RetryPolicy {

@@ -1,6 +1,7 @@
 import type { Scheduler } from '../../scheduler/scheduler.js';
 import { getProviderRegistry, type ProviderAdapter } from '../../core/providers/index.js';
 import { getCredentialStore } from '../security/credential-store.js';
+import type { IpcMainInvokeEvent } from 'electron';
 
 export function registerProvidersIpc(scheduler: Scheduler): void {
   const { ipcMain } = require('electron');
@@ -25,7 +26,7 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
     });
   });
 
-  ipcMain.handle('providers:get', async (_event, providerId: string) => {
+  ipcMain.handle('providers:get', async (_e: IpcMainInvokeEvent, providerId: string) => {
     const adapter = registry.get(providerId);
     if (!adapter) return null;
     const config = adapter.getProviderConfig();
@@ -35,7 +36,7 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
     };
   });
 
-  ipcMain.handle('providers:test', async (_event, providerId: string) => {
+  ipcMain.handle('providers:test', async (_e: IpcMainInvokeEvent, providerId: string) => {
     const adapter = registry.get(providerId);
     if (!adapter) return { success: false, error: 'Provider not found' };
 
@@ -49,7 +50,7 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
 
   ipcMain.handle(
     'providers:set-credential',
-    async (_event, providerId: string, credential: string) => {
+    async (_e: IpcMainInvokeEvent, providerId: string, credential: string) => {
       if (!credential || typeof credential !== 'string') {
         return { success: false, error: 'Invalid credential' };
       }
@@ -62,7 +63,7 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
     }
   );
 
-  ipcMain.handle('providers:remove-credential', async (_event, providerId: string) => {
+  ipcMain.handle('providers:remove-credential', async (_e: IpcMainInvokeEvent, providerId: string) => {
     try {
       const result = credentialStore.delete(`${providerId}-key`);
       return { success: result };
@@ -71,10 +72,35 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
     }
   });
 
-  ipcMain.handle('providers:toggle', async (_event, providerId: string, enabled: boolean) => {
+  ipcMain.handle('providers:toggle', async (_e: IpcMainInvokeEvent, providerId: string, enabled: boolean) => {
     const adapter = registry.get(providerId);
     if (!adapter) return { success: false, error: 'Provider not found' };
     adapter.getProviderConfig().isEnabled = enabled;
     return { success: true };
+  });
+
+  ipcMain.handle('providers:update-baseurl', async (_e: IpcMainInvokeEvent, providerId: string, baseUrl: string) => {
+    const adapter = registry.get(providerId);
+    if (!adapter) return { success: false, error: 'Provider not found' };
+    try {
+      const { OpenAICompatibleAdapter } = require('../../core/providers/openai-compatible/adapter.js');
+      if (adapter instanceof OpenAICompatibleAdapter && typeof (adapter as any).updateBaseUrl === 'function') {
+        (adapter as any).updateBaseUrl(baseUrl);
+      }
+    } catch {
+      // ignore
+    }
+    return { success: true };
+  });
+
+  ipcMain.handle('providers:discover-models', async (_e: IpcMainInvokeEvent, providerId: string) => {
+    const adapter = registry.get(providerId);
+    if (!adapter) return { success: false, error: 'Provider not found', models: [] };
+    try {
+      const models = await adapter.listModels();
+      return { success: true, providerId, models };
+    } catch (err) {
+      return { success: false, providerId, error: err instanceof Error ? err.message : String(err), models: [] };
+    }
   });
 }

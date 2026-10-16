@@ -58,6 +58,19 @@ describe('QuotaManager', () => {
     expect(remaining.unlimited).toBe(true);
   });
 
+  it('should reset counters when the period expires', () => {
+    manager.setConfig({ providerId: 'expiring', maxRequestsPerDay: 5 });
+    manager.record('expiring', 5, 1000);
+    expect(manager.canProceed('expiring', undefined, 10)).toBe(false);
+
+    const usage = manager.getUsage('expiring');
+    usage.periodEnd = new Date(Date.now() - 1000).toISOString();
+
+    expect(manager.canProceed('expiring', undefined, 10)).toBe(true);
+    expect(manager.getUsage('expiring').requestCount).toBe(0);
+    expect(manager.getUsage('expiring').tokenCount).toBe(0);
+  });
+
   it('should reset period', () => {
     manager.setConfig({ providerId: 'test', maxRequestsPerDay: 10 });
     manager.record('test', 8, 5000);

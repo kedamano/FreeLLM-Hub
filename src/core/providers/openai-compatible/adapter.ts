@@ -7,9 +7,16 @@ import type {
   ProviderModel,
   GatewayMessage,
   GatewayUsage,
+  GatewayToolCall,
 } from '../contracts.js';
 import type { AuthType } from '../../../shared/types/index.js';
 import { estimateTokenCount } from '../../../shared/utils/index.js';
+import {
+  mapHttpError,
+  mapNetworkError,
+  parseRetryAfterMs,
+  withRequestTimeout,
+} from '../request-errors.js';
 
 export interface OpenAICompatibleConfig {
   providerId: string;
@@ -34,6 +41,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   private knownModels: ProviderModel[];
   private credentialId?: string;
   private settings?: Record<string, unknown>;
+  private enabled = true;
 
   constructor(config: OpenAICompatibleConfig) {
     this.providerId = config.providerId;
@@ -54,12 +62,33 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       authType: this.authType,
       baseUrl: this.baseUrl,
       apiVersion: this.apiVersion,
-      isEnabled: true,
+      isEnabled: this.enabled,
       isBuiltIn: true,
       credentialStatus: this.credentialId ? 'configured' : 'unconfigured',
       credentialId: this.credentialId,
       settings: this.settings,
     };
+  }
+
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+  }
+
+  setCredential(credential: string | undefined, credentialId?: string): void {
+    this.credentialId = credential ? credentialId || this.credentialId : undefined;
+    if (credential) {
+      this.defaultHeaders = { ...this.defaultHeaders, Authorization: `Bearer ${credential}` };
+    } else {
+      delete this.defaultHeaders.Authorization;
+    }
+  }
+
+  updateBaseUrl(baseUrl: string): void {
+    this.baseUrl = baseUrl.replace(/\/$/, '');
+  }
+
+  setCredentialId(credentialId: string | undefined): void {
+    this.credentialId = credentialId;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -111,7 +140,9 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         await response.json();
         return this.mapToProviderModel(modelId);
       }
-    } catch {}
+    } catch {
+      return null;
+    }
 
     return null;
   }
@@ -122,16 +153,26 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     options?: ChatOptions
   ): Promise<{ content: string; usage: GatewayUsage; finishReason: string }> {
     const body = this.buildChatBody(messages, model, options, false);
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(body),
-      signal: options?.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+        signal: withRequestTimeout(options?.signal),
+      });
+    } catch (err) {
+      throw mapNetworkError(this.providerId, err);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Chat request failed (${response.status}): ${errorText}`);
+      throw mapHttpError(
+        this.providerId,
+        response.status,
+        errorText,
+        parseRetryAfterMs(response.headers.get('retry-after'))
+      );
     }
 
     const result = (await response.json()) as {
@@ -159,16 +200,26 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     options?: ChatOptions
   ): AsyncIterable<StreamChunk> {
     const body = this.buildChatBody(messages, model, options, true);
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(body),
-      signal: options?.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+        signal: withRequestTimeout(options?.signal),
+      });
+    } catch (err) {
+      throw mapNetworkError(this.providerId, err);
+    }
 
     if (!response.ok || !response.body) {
       const errorText = await response.text().catch(() => 'Unknown error');
-      throw new Error(`Stream request failed (${response.status}): ${errorText}`);
+      throw mapHttpError(
+        this.providerId,
+        response.status,
+        errorText,
+        parseRetryAfterMs(response.headers.get('retry-after'))
+      );
     }
 
     const reader = response.body.getReader();
@@ -278,7 +329,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         formattedMessages.push({
           role: msg.role,
           content: msg.content,
-          tool_calls: msg.toolCalls.map((tc) => ({
+          tool_calls: msg.toolCalls.map((tc: GatewayToolCall) => ({
             id: tc.id,
             type: tc.type,
             function: tc.function,
@@ -295,6 +346,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       max_tokens: options?.maxTokens,
       temperature: options?.temperature,
       stream: stream || false,
+      ...(stream ? { stream_options: { include_usage: true } } : {}),
       tools: options?.tools,
       response_format: options?.responseFormat,
     };
