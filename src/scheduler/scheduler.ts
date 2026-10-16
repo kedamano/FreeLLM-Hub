@@ -26,7 +26,6 @@ const PROVIDER_HEALTH_TTL_MS = 10000;
 export interface SchedulerOptions {
   maxRetries?: number;
   timeoutMs?: number;
-  preferFree?: boolean;
 }
 
 export interface SelectModelOptions {

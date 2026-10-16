@@ -11,12 +11,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
-    "noEmit": true,
-    "baseUrl": "./src",
-    "paths": {
-      "@shared/*": ["shared/*"],
-      "@renderer/*": ["renderer/*"]
-    }
+    "noEmit": true
   },
   "include": ["src/renderer/**/*", "src/shared/**/*"],
   "exclude": ["node_modules", "dist", "tests"]

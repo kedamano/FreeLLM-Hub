@@ -27,6 +27,11 @@
 - [ ] 凭证加密存储可用
 - [ ] 日志脱敏工作正常
 
+## 打包前置
+
+- [ ] 图标资源为最新（`npm run gen:icons` 重新生成 `resources/icons/icon.ico|icon.png|tray.png`）
+- 本地非管理员且未开启 Windows「开发者模式」时，electron-builder 解包 winCodeSign 会因无法创建符号链接而失败；CI 的 windows runner 不受影响，本地验证可临时追加 `-c.win.signAndEditExecutable=false`（会跳过 exe 图标与版本信息写入）
+
 ## 打包验证
 
 - [ ] NSIS 安装包正常创建

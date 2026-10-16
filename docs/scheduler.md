@@ -37,22 +37,46 @@
 
 ## 限流器
 
-基于滑动窗口的令牌桶：
-- 每分钟最大请求数：30
-- 每分钟最大 token 数：100,000
+按 `providerId:modelId` 维护 60 秒滑动窗口，默认每分钟 30 次请求 / 100,000 token，
+模型自带 `rateLimits` 时以其为上限。三个方法职责严格分开：
+
+| 方法 | 是否占用窗口 | 用途 |
+|------|--------------|------|
+| `check()` | 否 | 排序候选时只探测，不消耗额度 |
+| `acquire()` | 是 | 真正派发请求前预扣一次请求 + 预估 token |
+| `rollback()` | 释放 | 派发失败（含流式未产出首字节即失败）时撤销预扣 |
+| `record()` | 调整 | 请求结束后用真实 token 数校正预估偏差 |
+
+排序阶段全部候选都被窗口挡住时抛 `RateLimitError`（携带 `retryAfterMs`），
+网关据此返回 429 + `Retry-After`，而不是把限流伪装成 502。
+
+## 每日配额
+
+`provider-quota:<providerId>` 以 JSON 存在 settings 表，启动时由
+`hydrateQuotasFromSettings()` 载入调度器，因此配额不会因重启失效。
+
+- 配额按 **供应商** 统计，`record()` 同时写入模型桶和供应商桶；
+  查找配置时优先模型级、否则回退供应商级。
+- 当日用量写入 `quota_tracking` 表，重启后自动恢复，超限后调度器直接跳过该供应商。
+- 所有候选都超配额时抛 `QuotaExceededError`（429 + `Retry-After: 3600`）。
+- 上限校验范围：请求 0–10,000,000，token 0–1,000,000,000，`0`/留空表示不限制。
 
 ## 任务路由
 
-不同任务类型有不同的服务商优先级：
+不同任务类型有不同的服务商优先级（`task_type` 由网关请求体解析后透传，
+未知取值按 `general` 处理）：
 
 | 任务类型 | 优先服务商 | 必需能力 |
 |---------|-----------|---------|
-| general | ollama > groq > gemini > cloudflare | chat |
-| coding | ollama > groq > gemini > cerebras | chat + streaming |
-| analysis | ollama > groq > gemini > hf | chat + streaming |
-| creative | ollama > groq > gemini > cloudflare | chat |
-| classification | groq > ollama > cloudflare > gemini | chat + json-mode |
-| lightweight | ollama > cloudflare > groq > hf | chat |
+| general | ollama > local > groq > google-gemini > cloudflare | chat |
+| coding | ollama > groq > google-gemini > cerebras > cloudflare | chat + streaming |
+| analysis | ollama > groq > google-gemini > huggingface | chat + streaming |
+| creative | ollama > groq > google-gemini > cloudflare | chat |
+| summarization | cloudflare > groq > ollama > google-gemini | chat |
+| classification | groq > ollama > cloudflare > google-gemini | chat + json-mode |
+| extraction | groq > ollama > google-gemini > cloudflare | chat + json-mode |
+| translation | cloudflare > groq > ollama > google-gemini | chat |
+| lightweight | ollama > cloudflare > groq > google-gemini | chat |
 
 ## 重试策略
 
@@ -60,4 +84,20 @@
 - 基础延迟：1000ms
 - 退避乘数：2 (指数退避)
 - 最大延迟：30,000ms
-- 可重试错误码：RATE_LIMITED, TIMEOUT, SERVER_ERROR, ALL_FAILED
+- 可重试错误码：RATE_LIMITED, TIMEOUT, SERVER_ERROR, ALL_FAILED, NETWORK_ERROR
+
+## 错误语义
+
+调度器抛出的错误由网关映射为 OpenAI 兼容响应，失败日志会记录真正的供应商而不是
+`unknown`：
+
+| 错误码 | HTTP | 说明 |
+|--------|------|------|
+| RATE_LIMITED | 429 | 带 `Retry-After`，日志状态记为 `rate_limited` |
+| QUOTA_EXCEEDED | 429 | 每日配额耗尽，`Retry-After: 3600` |
+| AUTH_FAILED | 401 | 凭证无效 |
+| MODEL_NOT_FOUND | 404 | 指定的模型不存在 |
+| BAD_REQUEST / INVALID_REQUEST / CONTEXT_LENGTH_EXCEEDED | 400 | 请求本身不合法 |
+| TIMEOUT | 504 | 上游超时 |
+| ALL_FAILED / CIRCUIT_OPEN | 503 | 无可用供应商，`Retry-After: 30` |
+| NETWORK_ERROR / SERVER_ERROR / 其他上游错误 | 502 | 上游故障 |

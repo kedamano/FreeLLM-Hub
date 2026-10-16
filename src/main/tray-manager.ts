@@ -14,12 +14,20 @@ export class TrayManager {
   createTray(callbacks: TrayCallbacks): void {
     if (this.tray) return;
 
-    const iconPath = resolve(__dirname, '../../resources/icons/tray.png');
+    // tray.png is the asset generated for this purpose (see scripts/gen-icons.mjs);
+    // the .ico stays in the chain as a fallback for older checkouts.
+    const candidates = [
+      resolve(__dirname, '../../resources/icons/tray.png'),
+      resolve(__dirname, '../../resources/icons/icon.ico'),
+    ];
+    const iconPath = candidates.find((path) => existsSync(path));
     let icon: Electron.NativeImage;
 
-    if (existsSync(iconPath)) {
+    if (iconPath) {
       icon = nativeImage.createFromPath(iconPath);
+      if (icon.isEmpty()) console.warn(`[Tray] 图标无法解码: ${iconPath}`);
     } else {
+      console.warn(`[Tray] 未找到托盘图标，已使用空白图标: ${candidates.join(', ')}`);
       icon = nativeImage.createEmpty();
     }
 

@@ -31,16 +31,25 @@
 - 重试策略与故障切换
 
 ### 5. Provider Adapters
-- OpenAI 兼容适配器 (Groq, Cloudflare, HuggingFace, Cerebras)
+- OpenAI 兼容适配器 (Groq, Cloudflare, HuggingFace, Cerebras, SiliconFlow, NVIDIA NIM, OpenRouter, ModelScope, SenseNova, LongCat, 智谱, Moonshot, DeepSeek, MiniMax)
 - Google Gemini 适配器
 - Ollama 本地适配器 (原生 API)
 - LM Studio 适配器 (OpenAI 兼容)
+- 用户自建自定义服务商（任意 OpenAI 兼容 Base URL）
 
-### 6. 数据存储
+### 6. Web 管理进程 (`npm run start:web`)
+- 与桌面端共用 `src/main/services` 业务层，避免两套逻辑
+- Fastify 提供 `/api/*` 管理 REST 接口，并直接托管 `dist/renderer` 静态产物
+- 同一进程内启动 OpenAI 兼容网关（默认 3001）
+- 启动时载入每日配额并恢复当日用量，同时启动调用日志过期清理定时器
+
+### 7. 数据存储
 - SQLite + better-sqlite3
 - 迁移脚本内置
 - 凭证加密存储
-- 调用日志与统计
+- 调用日志与统计（`call_logs`）、供应商/模型目录（`providers`/`models`）、
+  设置与配额（`settings`）、每日配额用量（`quota_tracking`）
+- 熔断状态仅存内存：重启即给故障供应商一次新的机会，不落库
 
 ## 请求流程
 

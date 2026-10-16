@@ -20,6 +20,7 @@ export class WindowManager {
       minWidth: 960,
       minHeight: 600,
       title: 'FreeLLM Hub',
+      icon: resolve(__dirname, '../../resources/icons/icon.ico'),
       backgroundColor: '#f8fafc',
       webPreferences: {
         preload: resolve(__dirname, '../preload/index.js'),

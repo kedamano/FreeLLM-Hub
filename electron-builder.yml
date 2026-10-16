@@ -3,7 +3,7 @@ productName: FreeLLM Hub
 copyright: Copyright (c) 2026 FreeLLM Hub Team
 
 directories:
-  output: C:/temp/freellm-release
+  output: release
   buildResources: resources
 
 files:
@@ -20,10 +20,21 @@ win:
   target:
     - target: portable
       arch: [x64]
+    - target: nsis
+      arch: [x64]
   artifactName: ${productName}-${version}-${arch}.${ext}
   icon: resources/icons/icon.ico
 
 portable:
   artifactName: ${productName}-${version}-portable.${ext}
+
+# README + docs/release-checklist.md document an NSIS installer as a delivery
+# target, so restore it alongside portable (both x64 only, matching win.arch).
+nsis:
+  artifactName: ${productName}-${version}-setup.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
 
 compression: maximum

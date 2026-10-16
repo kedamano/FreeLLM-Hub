@@ -13,14 +13,7 @@
     "allowSyntheticDefaultImports": true,
     "declaration": false,
     "outDir": "./dist",
-    "rootDir": "./src",
-    "baseUrl": "./src",
-    "paths": {
-      "@shared/*": ["shared/*"],
-      "@core/*": ["core/*"],
-      "@main/*": ["main/*"],
-      "@renderer/*": ["renderer/*"]
-    }
+    "rootDir": "./src"
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist", "tests", "src/renderer", "**/*.test.ts"]

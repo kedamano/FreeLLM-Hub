@@ -1,6 +1,6 @@
 export default {
   semi: true,
-  trailingCommas: 'all',
+  trailingComma: 'all',
   singleQuote: true,
   printWidth: 100,
   tabWidth: 2,

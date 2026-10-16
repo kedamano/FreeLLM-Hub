@@ -1,12 +1,11 @@
 # Dependencies
 node_modules/
-package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# Build outputs
+# Build outputs (release-* also covers scratch dirs used to verify packaging)
 dist/
-release/
+release*/
 
 # Local runtime data (databases, credentials, logs)
 .dev-data/
