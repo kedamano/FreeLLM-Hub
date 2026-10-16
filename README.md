@@ -110,6 +110,11 @@ npm run start:web
 两个端口都只绑定 `127.0.0.1`，数据落在项目下的 `.web-data/`。
 开发时可用 `npm run dev:web`（带热重载）。
 
+想放到局域网里用，需要同时设置 `ADMIN_HOST=0.0.0.0` 与 `ADMIN_TOKEN=<自定义密钥>`——
+缺少 `ADMIN_TOKEN` 时管理端会拒绝以非本机地址启动。设置后浏览器需要在「设置 → 管理端令牌」
+里填一次该密钥，之后所有管理接口都要带 `Authorization: Bearer`。
+供应商密钥的明文只在点击「显示」时按需取回，常规接口一律只给掩码。
+
 ### 形态二：Electron 桌面端
 
 ```bash
@@ -123,6 +128,28 @@ npm run package            # 产出 release/ 下的 portable.exe 与 setup.exe
 
 > `better-sqlite3` 只能对齐一种 ABI：切回 Web 模式前执行 `npm run rebuild:node`，
 > 否则会看到 `NODE_MODULE_VERSION` 不匹配的错误。详见[常见问题](#常见问题)。
+
+#### 不用重装、不用换 ABI：给桌面程序加 `--web`
+
+安装好的桌面程序自带同一套管理端与 Web UI，加上 `--web` 即以无窗口方式运行：
+
+```bash
+# Windows
+"FreeLLM Hub.exe" --web
+# macOS
+"./FreeLLM Hub.app/Contents/MacOS/FreeLLM Hub" --web
+# Linux（AppImage 解包后同理）
+./freellm-hub --web
+```
+
+它复用当前进程的 Electron ABI，数据目录也与桌面窗口模式**完全相同**（同一个
+`userData/data/freellm-hub.db`，同一份凭证），所以不需要 `npm run rebuild:node`，
+也不需要重新录入密钥。管理端与网关地址仍是 `127.0.0.1:3000` / `127.0.0.1:3001`，
+`ADMIN_HOST`、`ADMIN_PORT`、`GATEWAY_PORT`、`ADMIN_TOKEN` 等环境变量照常可用。
+
+桌面窗口与 `--web` 共用单实例锁（两者会抢同一份数据库和端口），因此不能同时运行；
+后启动的那个会直接报错退出。Windows 上打包后的程序是 GUI 子系统进程，日志默认不进终端，
+需要看启动输出时设置 `ELECTRON_ENABLE_LOGGING=1`。
 
 ### 接入你的客户端
 

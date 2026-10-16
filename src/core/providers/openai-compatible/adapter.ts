@@ -70,6 +70,15 @@ const BASE_URL_FIELD: ProviderConfigField = {
   placeholder: 'https://api.example.com/v1',
 };
 
+/**
+ * Chain-of-thought has no agreed field name: DeepSeek, Qwen, Kimi and vLLM publish
+ * `reasoning_content`, while OpenRouter normalises to `reasoning`. Both are read here and
+ * republished downstream under `reasoning_content`, which is what clients already branch on.
+ */
+function pickReasoning(primary?: string, fallback?: string): string | undefined {
+  return primary || fallback || undefined;
+}
+
 export class OpenAICompatibleAdapter implements ProviderAdapter {
   readonly providerId: string;
   readonly providerName: string;
@@ -352,7 +361,12 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     messages: GatewayMessage[],
     model: string,
     options?: ChatOptions
-  ): Promise<{ content: string; usage: GatewayUsage; finishReason: string }> {
+  ): Promise<{
+    content: string;
+    toolCalls?: GatewayToolCall[];
+    usage: GatewayUsage;
+    finishReason: string;
+  }> {
     const body = this.buildChatBody(messages, model, options, false);
     const maxAttempts = Math.max(1, this.credentials.length);
     let response: Response | undefined;
@@ -385,21 +399,34 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     }
 
     const result = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string; tool_calls?: unknown[] }; finish_reason?: string }>;
+      choices?: Array<{
+        message?: {
+          content?: string | null;
+          tool_calls?: GatewayToolCall[];
+          reasoning_content?: string;
+          reasoning?: string;
+        };
+        finish_reason?: string;
+      }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
 
     const choice = result.choices?.[0];
     const content = choice?.message?.content || '';
+    const toolCalls = choice?.message?.tool_calls;
+    const reasoningContent = pickReasoning(choice?.message?.reasoning_content, choice?.message?.reasoning);
 
     return {
       content,
+      ...(toolCalls?.length ? { toolCalls } : {}),
+      ...(reasoningContent ? { reasoningContent } : {}),
       usage: {
         promptTokens: result.usage?.prompt_tokens || estimateTokenCount(JSON.stringify(messages)),
-        completionTokens: result.usage?.completion_tokens || estimateTokenCount(content),
+        completionTokens:
+          result.usage?.completion_tokens || estimateTokenCount(content + (reasoningContent || '')),
         totalTokens: result.usage?.total_tokens || 0,
       },
-      finishReason: choice?.finish_reason || 'stop',
+      finishReason: choice?.finish_reason || (toolCalls?.length ? 'tool_calls' : 'stop'),
     };
   }
 
@@ -466,7 +493,15 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
 
           try {
             const parsed = JSON.parse(data) as {
-              choices?: Array<{ delta?: { content?: string; tool_calls?: unknown[] }; finish_reason?: string }>;
+              choices?: Array<{
+                delta?: {
+                  content?: string;
+                  reasoning_content?: string;
+                  reasoning?: string;
+                  tool_calls?: unknown[];
+                };
+                finish_reason?: string;
+              }>;
               usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
             };
 
@@ -475,6 +510,9 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
 
             if (choice?.delta?.content) {
               chunk.content = choice.delta.content;
+            }
+            if (choice?.delta?.reasoning_content || choice?.delta?.reasoning) {
+              chunk.reasoningContent = pickReasoning(choice.delta.reasoning_content, choice.delta.reasoning);
             }
             if (choice?.finish_reason) {
               chunk.finishReason = choice.finish_reason;
@@ -490,7 +528,11 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
               chunk.toolCalls = choice.delta.tool_calls as StreamChunk['toolCalls'];
             }
 
-            yield chunk;
+            // Reasoning models emit a delta per token with nothing in it but role and
+            // empties; forwarding those multiplies SSE frames on the wire for no payload.
+            if (chunk.content || chunk.reasoningContent || chunk.toolCalls || chunk.finishReason || chunk.usage) {
+              yield chunk;
+            }
           } catch {
             // Skip malformed SSE data
           }
@@ -585,19 +627,18 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     }
 
     for (const msg of messages) {
+      const formatted: Record<string, unknown> = { role: msg.role, content: msg.content };
+      if (msg.name) formatted.name = msg.name;
+      // A `tool` role message is meaningless to the upstream without the call it answers.
+      if (msg.toolCallId) formatted.tool_call_id = msg.toolCallId;
       if (msg.toolCalls) {
-        formattedMessages.push({
-          role: msg.role,
-          content: msg.content,
-          tool_calls: msg.toolCalls.map((tc: GatewayToolCall) => ({
-            id: tc.id,
-            type: tc.type,
-            function: tc.function,
-          })),
-        });
-      } else {
-        formattedMessages.push({ role: msg.role, content: msg.content });
+        formatted.tool_calls = msg.toolCalls.map((tc: GatewayToolCall) => ({
+          id: tc.id,
+          type: tc.type,
+          function: tc.function,
+        }));
       }
+      formattedMessages.push(formatted);
     }
 
     return {
@@ -605,6 +646,9 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       messages: formattedMessages,
       max_tokens: options?.maxTokens,
       temperature: options?.temperature,
+      top_p: options?.topP,
+      stop: options?.stop,
+      tool_choice: options?.toolChoice,
       stream: stream || false,
       ...(stream ? { stream_options: { include_usage: true } } : {}),
       tools: options?.tools,

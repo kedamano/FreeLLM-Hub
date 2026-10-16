@@ -15,10 +15,13 @@ import {
 import type { SchedulerTrace, TraceEvent } from '../../scheduler/trace.js';
 import { getProviderRegistry } from '../../core/providers/registry.js';
 import type {
+  GatewayMessage,
   GatewayRequest,
+  GatewayToolCall,
   ProviderId,
 } from '../../shared/types/index.js';
 import { generateRequestId } from '../../shared/utils/index.js';
+import { normalizeClientContent } from '../../shared/utils/content.js';
 import {
   AllProvidersFailedError,
   AuthenticationError,
@@ -334,11 +337,21 @@ export class GatewayServer {
     this.app.post<{
       Body: {
         model?: string;
-        messages: Array<{ role: string; content: string }>;
+        messages: Array<{
+          role: string;
+          content?: unknown;
+          name?: string;
+          tool_calls?: GatewayToolCall[];
+          tool_call_id?: string;
+        }>;
         max_tokens?: number;
         temperature?: number;
+        top_p?: number;
+        stop?: string | string[];
+        n?: number;
         stream?: boolean;
         tools?: unknown[];
+        tool_choice?: unknown;
         response_format?: { type: string };
         task_type?: string;
       };
@@ -373,8 +386,62 @@ export class GatewayServer {
         });
       }
 
+      // Serving one candidate while the client asked for N would silently hand back a
+      // truncated result, so refuse it instead of pretending the pool supports fan-out.
+      if (body.n !== undefined && body.n !== 1) {
+        auditRejectedRequest({
+          requestId,
+          route: routeUrl,
+          method: request.method,
+          requestedModel: body.model,
+          clientAddress: request.ip,
+          statusCode: 400,
+          errorCode: 'BAD_REQUEST',
+          errorMessage: 'n other than 1 is not supported',
+          params: { model: body.model, n: body.n },
+        });
+        return reply.status(400).send({
+          error: {
+            message: 'n other than 1 is not supported by this gateway',
+            type: 'invalid_request',
+            code: 'BAD_REQUEST',
+          },
+        });
+      }
+
       const taskType = parseTaskType(body.task_type) ?? parseTaskType(readSetting('default_task_type'));
       const stream = Boolean(body.stream);
+
+      // `content` is whatever JSON the client sent: a string, null, or OpenAI multimodal
+      // parts. Validating it here keeps a malformed body a 400 instead of a crash several
+      // layers down inside an adapter.
+      const gatewayMessages: GatewayMessage[] = [];
+      for (const m of body.messages) {
+        const normalized = normalizeClientContent(m.content);
+        if (!normalized.ok) {
+          auditRejectedRequest({
+            requestId,
+            route: routeUrl,
+            method: request.method,
+            requestedModel: body.model,
+            clientAddress: request.ip,
+            statusCode: 400,
+            errorCode: 'BAD_REQUEST',
+            errorMessage: normalized.error,
+            params: { model: body.model, maxTokens: body.max_tokens },
+          });
+          return reply.status(400).send({
+            error: { message: normalized.error, type: 'invalid_request', code: 'BAD_REQUEST' },
+          });
+        }
+        gatewayMessages.push({
+          role: m.role as 'system' | 'user' | 'assistant' | 'tool',
+          content: normalized.content,
+          ...(m.name ? { name: m.name } : {}),
+          ...(m.tool_call_id ? { toolCallId: m.tool_call_id } : {}),
+          ...(m.tool_calls ? { toolCalls: m.tool_calls } : {}),
+        });
+      }
 
       beginRequestAudit({
         requestId,
@@ -396,14 +463,14 @@ export class GatewayServer {
 
       const gatewayRequest: GatewayRequest = {
         requestId,
-        messages: body.messages.map((m) => ({
-          role: m.role as 'system' | 'user' | 'assistant' | 'tool',
-          content: m.content,
-        })),
+        messages: gatewayMessages,
         model: body.model,
         taskType,
         maxTokens: body.max_tokens,
         temperature: body.temperature,
+        topP: body.top_p,
+        stop: body.stop,
+        toolChoice: body.tool_choice,
         stream: body.stream,
         tools: body.tools,
         responseFormat: body.response_format,
@@ -457,6 +524,8 @@ export class GatewayServer {
         durationMs: Date.now() - startTime,
       });
 
+      const toolCalls = result.toolCalls;
+
       const response = {
         id: request.requestId,
         object: 'chat.completion',
@@ -466,7 +535,14 @@ export class GatewayServer {
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: result.content, finish_reason: result.finishReason },
+            message: {
+              role: 'assistant',
+              // OpenAI sends null content alongside tool_calls; clients branch on it.
+              content: toolCalls?.length && !result.content ? null : result.content,
+              ...(result.reasoningContent ? { reasoning_content: result.reasoningContent } : {}),
+              ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
+              finish_reason: result.finishReason,
+            },
             finish_reason: result.finishReason,
           },
         ],
@@ -578,33 +654,49 @@ export class GatewayServer {
       let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       let chunkCount = 0;
       let firstTokenMs: number | null = null;
+      let sentRole = false;
 
       try {
         for await (const chunk of stream) {
           if (clientGone) break;
-          if (firstTokenMs === null) firstTokenMs = Date.now() - startTime;
-          chunkCount += 1;
           providerId = chunk.providerId ?? providerId;
           modelId = chunk.model ?? modelId;
           if (chunk.finishReason) finishReason = chunk.finishReason;
+          // Usage is reported once, in the closing chunk, so it never needs a frame of its own.
           if (chunk.usage) usage = chunk.usage;
 
-          const sseData = JSON.stringify({
-            id: request.requestId,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: chunk.model,
-            provider: chunk.providerId,
-            choices: [
-              {
-                index: 0,
-                delta: { content: chunk.content || '' },
-                finish_reason: chunk.finishReason || null,
-              },
-            ],
-          });
+          const delta: Record<string, unknown> = {};
+          if (!sentRole) {
+            delta.role = 'assistant';
+            sentRole = true;
+          }
+          if (chunk.content) delta.content = chunk.content;
+          // Reasoning rides beside content under its own key so a client that only knows
+          // `content` never receives chain-of-thought text as if it were the answer.
+          if (chunk.reasoningContent) delta.reasoning_content = chunk.reasoningContent;
+          if (chunk.toolCalls?.length) delta.tool_calls = chunk.toolCalls;
 
-          await write(`data: ${sseData}\n\n`);
+          if (chunk.finishReason || Object.keys(delta).length > 0) {
+            if (firstTokenMs === null) firstTokenMs = Date.now() - startTime;
+            chunkCount += 1;
+
+            const sseData = JSON.stringify({
+              id: request.requestId,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: chunk.model,
+              provider: chunk.providerId,
+              choices: [
+                {
+                  index: 0,
+                  delta,
+                  finish_reason: chunk.finishReason || null,
+                },
+              ],
+            });
+
+            await write(`data: ${sseData}\n\n`);
+          }
         }
 
         if (clientGone) {

@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -16,6 +16,7 @@ import { Scheduler } from '../scheduler/scheduler.js';
 import { GatewayManager } from '../main/gateway/gateway-manager.js';
 import { registerAdminApi } from './admin-api.js';
 import { registerStaticRenderer } from './static-server.js';
+import { assertAdminBindAllowed } from './admin-auth.js';
 
 const LOOPBACK_ORIGIN = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i;
 
@@ -37,9 +38,17 @@ export interface StartServerOptions {
   adminPort?: number;
   gatewayPort?: number;
   rendererDir?: string;
+  adminToken?: string | null;
 }
 
-export async function startServer(options: StartServerOptions = {}) {
+export interface WebServer {
+  app: FastifyInstance;
+  gateway: GatewayManager;
+  scheduler: Scheduler;
+  shutdown: () => Promise<void>;
+}
+
+export async function startServer(options: StartServerOptions = {}): Promise<WebServer> {
   const adminHost = options.adminHost ?? process.env.ADMIN_HOST ?? '127.0.0.1';
   const adminPort = options.adminPort ?? Number(process.env.ADMIN_PORT || 3000);
   const gatewayPort = options.gatewayPort ?? Number(process.env.GATEWAY_PORT || 3001);
@@ -48,8 +57,12 @@ export async function startServer(options: StartServerOptions = {}) {
     process.env.RENDERER_DIR ??
     resolve(__dirname, '..', 'renderer');
 
+  const adminToken = (options.adminToken ?? process.env.ADMIN_TOKEN ?? '').trim() || null;
+  assertAdminBindAllowed(adminHost, adminToken);
+
   const config = getAppConfig();
   console.log(`[Web] Data directory: ${config.dataDir}`);
+  if (adminToken) console.log('[Web] Admin API authentication: enabled (Bearer ADMIN_TOKEN)');
 
   getDatabase();
   getCredentialStore();
@@ -77,6 +90,9 @@ export async function startServer(options: StartServerOptions = {}) {
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (LOOPBACK_ORIGIN.test(origin)) return callback(null, true);
+      // Token-gated mode is meant to be reachable off-machine, so its own (non-loopback)
+      // UI origin has to be allowed; nothing is readable without the bearer token anyway.
+      if (adminToken) return callback(null, true);
       callback(null, false);
     },
   });
@@ -90,7 +106,7 @@ export async function startServer(options: StartServerOptions = {}) {
   // without a restart, and there is no IPC layer in web mode to do it eagerly).
   const disposeProfileWatch = watchProfileChanges(scheduler);
 
-  await registerAdminApi(app, { scheduler, gateway, version: readVersion() });
+  await registerAdminApi(app, { scheduler, gateway, version: readVersion(), adminToken });
   registerStaticRenderer(app, rendererDir);
 
   await app.listen({ host: adminHost, port: adminPort });

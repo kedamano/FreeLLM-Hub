@@ -22,7 +22,7 @@ declare global {
         get: (providerId: string) => Promise<unknown>;
         test: (providerId: string) => Promise<{ success: boolean; error?: string }>;
         setCredential: (providerId: string, credential: string) => Promise<{ success: boolean }>;
-        getCredential: (providerId: string, index?: number) => Promise<{ credential: string | null }>;
+        revealCredential: (providerId: string, index?: number) => Promise<{ credential: string | null }>;
         listCredentials: (providerId: string) => Promise<{
           credentials: Array<{ index: number; keyId: string; masked: string }>;
         }>;

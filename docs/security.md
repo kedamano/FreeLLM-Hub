@@ -80,6 +80,18 @@ allowRunningInsecureContent: false
 - 删除服务商不影响其他凭证
 - 应用退出时自动清理内存中的敏感数据
 
+## 管理端接口与明文凭证
+
+- `GET /api/providers/:id/credential` 与 `…/credentials` 只返回掩码（`sk-xxxxxx…xxxx`），
+  供应商列表、用量统计、审计与网关接口都不携带密钥明文。
+- 明文只通过 `POST /api/providers/:id/credential/reveal` 返回，对应界面上的"显示"按钮——
+  一次显式动作换一次明文，不存在默认就把密钥铺给前端的接口。
+- 未配置 `ADMIN_TOKEN` 时管理端只监听 `127.0.0.1`，且 reveal 额外要求请求方是 loopback 地址；
+  `ADMIN_HOST` 指向非 loopback 又没有令牌时进程直接拒绝启动（fail-closed），而不是"先跑起来再说"。
+- 配置 `ADMIN_TOKEN` 后所有 `/api/*` 都需要 `Authorization: Bearer`，比对使用 `timingSafeEqual`；
+  界面把令牌存在本机浏览器 `localStorage`，服务端不通过任何接口下发它。
+- 桌面形态走 IPC 而非 HTTP，reveal 通道名为 `providers:reveal-credential`，与列表接口的掩码返回分离。
+
 ## OAuth 令牌托管
 
 - 访问令牌与刷新令牌作为一个整体（JSON 包）经 `safeStorage` / AES-256-GCM 加密后写入 `credentials` 表，

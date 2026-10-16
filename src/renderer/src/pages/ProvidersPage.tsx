@@ -462,7 +462,7 @@ export default function ProvidersPage() {
       const api = getFreellmApi();
       if (api) {
         try {
-          const res = await api.providers.getCredential(selectedId);
+          const res = await api.providers.revealCredential(selectedId);
           if (res?.credential) {
             setApiKey(res.credential);
             setKeyIsMasked(false);
@@ -552,7 +552,7 @@ export default function ProvidersPage() {
       const api = getFreellmApi();
       if (!api) return;
       try {
-        const res = await api.providers.getCredential(selectedId, index);
+        const res = await api.providers.revealCredential(selectedId, index);
         setRevealedKeys((prev) => ({ ...prev, [index]: res?.credential ?? '' }));
       } catch {
         // keep masked if reveal fails

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ServerIcon, CheckIcon } from '../components/Icons';
-import { useIPC, getFreellmApi } from '../hooks/useIPC';
+import { useIPC, getFreellmApi, getAdminToken, setAdminToken } from '../hooks/useIPC';
 import { LoadingState } from '../components/ErrorBoundary';
 
 interface GatewaySettings {
@@ -120,6 +120,17 @@ export default function SettingsPage() {
   const gatewayUrl = `http://${gateway.host}:${gateway.port}`;
   const agentBaseUrl = `${gatewayUrl}/v1`;
 
+  // The desktop build talks to the main process over IPC, where there is no HTTP token to store.
+  const isWebMode = typeof window !== 'undefined' && !(window as { freellm?: unknown }).freellm;
+  const [adminToken, setAdminTokenState] = useState(() => getAdminToken());
+  const [adminTokenSaved, setAdminTokenSaved] = useState(false);
+
+  function handleSaveAdminToken() {
+    setAdminToken(adminToken.trim());
+    setAdminTokenSaved(true);
+    window.setTimeout(() => setAdminTokenSaved(false), 2000);
+  }
+
   if (loading) {
     return <LoadingState />;
   }
@@ -228,6 +239,35 @@ export default function SettingsPage() {
           )}
         </div>
       </div>
+
+      {isWebMode && (
+        <div className="card card-hover mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-surface-800">管理端令牌</h3>
+            {adminTokenSaved && (
+              <span className="text-xs text-success font-medium flex items-center gap-1">
+                <CheckIcon size={12} /> 已保存
+              </span>
+            )}
+          </div>
+          <label className="label">ADMIN_TOKEN</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="password"
+              value={adminToken}
+              onChange={(e) => setAdminTokenState(e.target.value)}
+              placeholder="服务端设置了 ADMIN_TOKEN 时在此填入"
+              className="input flex-1 min-w-0 font-mono text-sm"
+            />
+            <button onClick={handleSaveAdminToken} className="btn-secondary text-xs shrink-0">
+              保存
+            </button>
+          </div>
+          <p className="text-[11px] text-surface-400 mt-1">
+            令牌只保存在本机浏览器里；留空表示服务端未启用鉴权。设置 ADMIN_TOKEN 后所有管理接口都需要它。
+          </p>
+        </div>
+      )}
 
       {/* Agent Configuration Help */}
       <div className="card card-hover mb-4">

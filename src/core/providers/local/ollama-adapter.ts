@@ -9,6 +9,7 @@ import type {
   GatewayUsage,
 } from '../contracts.js';
 import { estimateTokenCount } from '../../../shared/utils/index.js';
+import { contentToImages, contentToText } from '../../../shared/utils/content.js';
 import type { ModelCapability, ProviderConfigField, ProviderReadiness } from '../../../shared/types/index.js';
 import { mapHttpError, mapNetworkError, withRequestTimeout } from '../request-errors.js';
 import { ProviderError } from '../../../shared/errors/index.js';
@@ -334,21 +335,32 @@ export class OllamaAdapter implements ProviderAdapter {
   private convertMessages(
     messages: GatewayMessage[],
     systemPrompt?: string
-  ): Array<{ role: string; content: string }> {
-    const result: Array<{ role: string; content: string }> = [];
+  ): Array<{ role: string; content: string; images?: string[] }> {
+    const result: Array<{ role: string; content: string; images?: string[] }> = [];
 
     if (systemPrompt) {
       result.push({ role: 'system', content: systemPrompt });
     }
 
     for (const msg of messages) {
-      if (msg.content) {
-        result.push({ role: msg.role, content: msg.content });
-      }
+      const text = contentToText(msg.content);
+      // Ollama has no structured content field: the parts collapse into `content` and the
+      // images move to its `images` array. Nothing is fetched here — a remote URL is
+      // handed to the local Ollama server unchanged so this process never becomes the
+      // one that reaches out to an arbitrary host.
+      const images = contentToImages(msg.content).map(stripDataUrlPrefix).filter((img) => img.length > 0);
+      if (!text && images.length === 0) continue;
+      result.push({ role: msg.role, content: text, ...(images.length ? { images } : {}) });
     }
 
     return result;
   }
+}
+
+/** Ollama expects bare base64, so the `data:<mime>;base64,` envelope is removed. */
+function stripDataUrlPrefix(url: string): string {
+  const match = /^data:[^;]*;base64,(.*)$/s.exec(url);
+  return match ? match[1] : url;
 }
 
 export function createOllamaAdapter(config?: OllamaConfig): OllamaAdapter {

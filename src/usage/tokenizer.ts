@@ -1,3 +1,6 @@
+import { contentTokenWeight } from '../shared/utils/content.js';
+import type { GatewayContent } from '../shared/types/index.js';
+
 export function estimateTokens(text: string): number {
   if (!text) return 0;
 
@@ -8,14 +11,17 @@ export function estimateTokens(text: string): number {
   return Math.ceil(chineseChars * 1.5 + otherChars / 4 + words * 0.3);
 }
 
+export function estimateContentTokens(content: GatewayContent): number {
+  const { text, imageTokens } = contentTokenWeight(content);
+  return estimateTokens(text) + imageTokens;
+}
+
 export function estimateMessagesTokens(
-  messages: Array<{ role: string; content: string | null }>
+  messages: Array<{ role: string; content: GatewayContent }>
 ): number {
   let total = 0;
   for (const msg of messages) {
-    if (msg.content) {
-      total += estimateTokens(msg.content);
-    }
+    total += estimateContentTokens(msg.content);
     total += 4;
   }
   total += 2;

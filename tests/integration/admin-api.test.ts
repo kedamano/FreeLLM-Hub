@@ -446,4 +446,110 @@ describe('Admin API', () => {
     expect(body.success).toBe(false);
     expect(typeof body.error).toBe('string');
   });
+
+  it('serves credentials masked everywhere except the explicit reveal route', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/providers/groq/credential',
+      payload: { credential: 'sk-super-secret-value' },
+    });
+
+    const masked = await app.inject({ method: 'GET', url: '/api/providers/groq/credential' });
+    expect(masked.statusCode).toBe(200);
+    expect(masked.json()).toEqual({ masked: 'sk-sup…alue', hasCredential: true });
+    expect(masked.body).not.toContain('sk-super-secret-value');
+
+    const list = await app.inject({ method: 'GET', url: '/api/providers/groq/credentials' });
+    expect(list.body).not.toContain('sk-super-secret-value');
+
+    const providers = await app.inject({ method: 'GET', url: '/api/providers' });
+    expect(providers.body).not.toContain('sk-super-secret-value');
+
+    const revealed = await app.inject({
+      method: 'POST',
+      url: '/api/providers/groq/credential/reveal',
+      payload: { index: 0 },
+    });
+    expect(revealed.statusCode).toBe(200);
+    expect(revealed.json()).toEqual({ credential: 'sk-super-secret-value' });
+  });
+
+  it('refuses to reveal plaintext to a non-loopback peer when no token is configured', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/providers/groq/credential',
+      payload: { credential: 'sk-lan-secret' },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/providers/groq/credential/reveal',
+      payload: { index: 0 },
+      remoteAddress: '10.0.0.7',
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).not.toContain('sk-lan-secret');
+    expect((res.json() as { error: string }).error).toContain('ADMIN_TOKEN');
+  });
+});
+
+describe('Admin API behind ADMIN_TOKEN', () => {
+  let app: FastifyInstance;
+  const scheduler = new Scheduler();
+  const gateway = createGatewayFake();
+
+  beforeEach(async () => {
+    app = Fastify();
+    await registerAdminApi(app, {
+      scheduler,
+      gateway: gateway as unknown as GatewayManager,
+      version: '0.1.0-test',
+      adminToken: 'admin-open-token',
+    });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('rejects unauthenticated and mis-authenticated reads', async () => {
+    const anon = await app.inject({ method: 'GET', url: '/api/providers' });
+    expect(anon.statusCode).toBe(401);
+    expect((anon.json() as { code: string }).code).toBe('ADMIN_AUTH_REQUIRED');
+
+    const wrong = await app.inject({
+      method: 'GET',
+      url: '/api/usage/summary',
+      headers: { authorization: 'Bearer guess' },
+    });
+    expect(wrong.statusCode).toBe(401);
+  });
+
+  it('serves the full API to a bearer token holder, including reveal', async () => {
+    const headers = { authorization: 'Bearer admin-open-token' };
+    const list = await app.inject({ method: 'GET', url: '/api/providers', headers });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toBeInstanceOf(Array);
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/providers/groq/credential',
+      payload: { credential: 'sk-remote-secret' },
+      headers,
+    });
+
+    const masked = await app.inject({ method: 'GET', url: '/api/providers/groq/credential', headers });
+    expect(masked.body).not.toContain('sk-remote-secret');
+
+    const revealed = await app.inject({
+      method: 'POST',
+      url: '/api/providers/groq/credential/reveal',
+      payload: { index: 0 },
+      headers,
+      remoteAddress: '10.0.0.7',
+    });
+    expect(revealed.statusCode).toBe(200);
+    expect(revealed.json()).toEqual({ credential: 'sk-remote-secret' });
+  });
 });

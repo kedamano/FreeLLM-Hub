@@ -26,6 +26,26 @@ export type FreeLLMApi = Window['freellm'];
 
 const API_BASE = '/api';
 
+const ADMIN_TOKEN_KEY = 'freellm.adminToken';
+
+/** The admin token is typed once into Settings and kept locally; the server never hands it out. */
+export function getAdminToken(): string {
+  try {
+    return localStorage.getItem(ADMIN_TOKEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function setAdminToken(token: string): void {
+  try {
+    if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else localStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch {
+    // storage disabled (private mode): requests simply go without the header
+  }
+}
+
 /** Build a query string, skipping absent values. */
 function qs(values: Record<string, string | number | undefined>): string {
   const params = new URLSearchParams();
@@ -36,12 +56,16 @@ function qs(values: Record<string, string | number | undefined>): string {
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
-  });
+  const token = getAdminToken();
+  const headers: Record<string, string> = {
+    ...((init?.headers as Record<string, string>) ?? {}),
+  };
+  if (init?.body) headers['Content-Type'] = 'application/json';
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (!res.ok) {
     let message = `请求失败 (HTTP ${res.status})`;
+    if (res.status === 401) message = '需要管理令牌：请在设置页填入 ADMIN_TOKEN';
     try {
       const body = (await res.json()) as { error?: string };
       if (typeof body?.error === 'string') message = body.error;
@@ -69,9 +93,10 @@ function createHttpApi(): FreeLLMApi {
         postJson<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/test`),
       setCredential: (providerId: string, credential: string) =>
         postJson<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { credential }),
-      getCredential: (providerId: string, index?: number) =>
-        http<{ credential: string | null }>(
-          `/providers/${seg(providerId)}/credential?index=${index ?? 0}`
+      revealCredential: (providerId: string, index?: number) =>
+        postJson<{ credential: string | null }>(
+          `/providers/${seg(providerId)}/credential/reveal`,
+          { index: index ?? 0 }
         ),
       listCredentials: (providerId: string) =>
         http<{ credentials: Array<{ index: number; keyId: string; masked: string }> }>(

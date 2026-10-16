@@ -43,6 +43,9 @@
 - Fastify 提供 `/api/*` 管理 REST 接口，并直接托管 `dist/renderer` 静态产物
 - 同一进程内启动 OpenAI 兼容网关（默认 3001）
 - 启动时载入每日配额并恢复当日用量，同时启动调用日志过期清理定时器
+- 同一入口 `startServer()` 也挂在桌面程序的 `--web` 开关上（`src/main/web-mode.ts`）：
+  Electron 主进程不建窗口直接服务，因而沿用桌面端数据目录与打包进应用的
+  `better-sqlite3` Electron ABI；信号与退出路径先关闭服务再 `app.exit`
 
 ### 7. 数据存储
 - SQLite + better-sqlite3，**版本化迁移**（`src/core/database/migrations.ts`，版本号写入 `PRAGMA user_version`）

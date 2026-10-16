@@ -112,14 +112,34 @@ export interface GatewayRequest {
   taskType?: TaskType;
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
+  stop?: string | string[];
+  toolChoice?: unknown;
   stream?: boolean;
   tools?: unknown[];
   responseFormat?: { type: string };
 }
 
+/**
+ * One OpenAI-style multimodal content part. `text` and `image_url` are interpreted by
+ * the gateway; any other type is forwarded untouched so provider-specific parts
+ * (`input_audio`, `file`) work without being redefined here.
+ */
+export interface GatewayContentPart {
+  type: 'text' | 'image_url' | (string & {});
+  text?: string;
+  image_url?: { url: string; detail?: 'auto' | 'low' | 'high' };
+}
+
+/**
+ * A message body: plain text, an array of multimodal parts, or null (which OpenAI uses
+ * for assistant turns that carry only tool calls).
+ */
+export type GatewayContent = string | GatewayContentPart[] | null;
+
 export interface GatewayMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: GatewayContent;
   name?: string;
   toolCallId?: string;
   toolCalls?: GatewayToolCall[];
@@ -134,11 +154,25 @@ export interface GatewayToolCall {
   };
 }
 
+/**
+ * Streaming form: providers split a call across chunks, so every field except the
+ * positional `index` may be absent until the arguments finish arriving.
+ */
+export interface GatewayToolCallDelta {
+  index?: number;
+  id?: string;
+  type?: 'function';
+  function?: { name?: string; arguments?: string };
+}
+
 export interface GatewayResponse {
   requestId: string;
   model: string;
   providerId: ProviderId;
   content: string;
+  /** Chain-of-thought some providers stream alongside `content` (`reasoning_content`). */
+  reasoningContent?: string;
+  toolCalls?: GatewayToolCall[];
   usage: GatewayUsage;
   finishReason: string;
   durationMs: number;

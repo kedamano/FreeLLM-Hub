@@ -11,11 +11,14 @@ import * as profileService from '../main/services/profile-service.js';
 import * as oauthService from '../main/services/oauth-service.js';
 import { clampDays, normalizeAuditQuery } from '../usage/audit-query.js';
 import { getAppConfig } from '../core/config/app-config.js';
+import { canRevealCredential, createAdminAuthHook } from './admin-auth.js';
 
 export interface AdminApiOptions {
   scheduler: Scheduler;
   gateway: GatewayManager;
   version: string;
+  /** When set, every `/api` route requires `Authorization: Bearer <token>`. */
+  adminToken?: string | null;
 }
 
 function sendValue(reply: FastifyReply, value: unknown): FastifyReply {
@@ -23,7 +26,9 @@ function sendValue(reply: FastifyReply, value: unknown): FastifyReply {
 }
 
 export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptions): Promise<void> {
-  const { scheduler, gateway, version } = opts;
+  const { scheduler, gateway, version, adminToken = null } = opts;
+
+  app.addHook('preHandler', createAdminAuthHook(adminToken));
 
   // ─── App ───────────────────────────────────────────────────────────
   app.get('/api/app/version', async (_request, reply) => sendValue(reply, version));
@@ -55,7 +60,21 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
   app.get<{ Params: { id: string }; Querystring: { index?: string } }>(
     '/api/providers/:id/credential',
     async (request) =>
-      providerService.getProviderCredential(request.params.id, Number(request.query.index) || 0)
+      providerService.getProviderCredentialMasked(request.params.id, Number(request.query.index) || 0)
+  );
+
+  app.post<{ Params: { id: string }; Body: { index?: number } }>(
+    '/api/providers/:id/credential/reveal',
+    async (request, reply) => {
+      const access = canRevealCredential(request, adminToken);
+      if (!access.ok) {
+        return reply
+          .status(403)
+          .type('application/json')
+          .send(JSON.stringify({ success: false, error: access.reason }));
+      }
+      return providerService.getProviderCredential(request.params.id, Number(request.body?.index) || 0);
+    }
   );
 
   app.get<{ Params: { id: string } }>('/api/providers/:id/credentials', async (request) =>

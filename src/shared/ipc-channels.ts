@@ -10,7 +10,7 @@ export const IPC_CHANNELS = [
   'providers:get',
   'providers:test',
   'providers:set-credential',
-  'providers:get-credential',
+  'providers:reveal-credential',
   'providers:list-credentials',
   'providers:add-credential',
   'providers:remove-credential-slot',

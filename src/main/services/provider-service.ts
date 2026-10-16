@@ -239,6 +239,23 @@ export function setProviderCredential(
   }
 }
 
+/**
+ * The only credential shape allowed on the general API surface: enough to recognise
+ * a key in the UI, never enough to use it. Plaintext leaves through
+ * `getProviderCredential`, which the HTTP layer exposes as an explicit reveal call.
+ */
+export function getProviderCredentialMasked(
+  providerId: string,
+  index = 0
+): { masked: string; hasCredential: boolean } {
+  try {
+    const value = getCredentialStore().retrieve(slotKeyFor(providerId, index));
+    return { masked: maskKey(value), hasCredential: !!value };
+  } catch {
+    return { masked: '', hasCredential: false };
+  }
+}
+
 export function getProviderCredential(
   providerId: string,
   index = 0

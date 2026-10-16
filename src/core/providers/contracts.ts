@@ -3,6 +3,8 @@ import type {
   ProviderModel,
   GatewayMessage,
   GatewayUsage,
+  GatewayToolCall,
+  GatewayToolCallDelta,
   ModelCapability,
   ProviderReadiness,
 } from '../../shared/types/index.js';
@@ -16,19 +18,20 @@ export type {
   ProviderModel,
   ProviderReadiness,
   GatewayMessage,
+  GatewayContent,
+  GatewayContentPart,
   GatewayUsage,
   GatewayToolCall,
+  GatewayToolCallDelta,
 } from '../../shared/types/index.js';
 
 export interface StreamChunk {
   content?: string;
+  /** Chain-of-thought delta (`delta.reasoning_content`), kept apart from the answer. */
+  reasoningContent?: string;
   finishReason?: string;
   usage?: GatewayUsage;
-  toolCalls?: Array<{
-    id: string;
-    type: 'function';
-    function: { name: string; arguments: string };
-  }>;
+  toolCalls?: GatewayToolCallDelta[];
 }
 
 export interface ProviderAdapter {
@@ -50,6 +53,9 @@ export interface ProviderAdapter {
     options?: ChatOptions
   ): Promise<{
     content: string;
+    toolCalls?: GatewayToolCall[];
+    /** Chain-of-thought (`message.reasoning_content`), never merged into `content`. */
+    reasoningContent?: string;
     usage: GatewayUsage;
     finishReason: string;
   }>;
@@ -83,6 +89,9 @@ export interface ProviderAdapter {
 export interface ChatOptions {
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
+  stop?: string | string[];
+  toolChoice?: unknown;
   systemPrompt?: string;
   tools?: unknown[];
   responseFormat?: { type: string };

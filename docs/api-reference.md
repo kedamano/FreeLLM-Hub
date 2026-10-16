@@ -6,6 +6,12 @@
 |------|----------|----------|-----------------|
 | Electron 桌面端 | `npm run dev` | 桌面窗口 | 动态端口，经 `gateway:getStatus` 获取 |
 | Web 管理端 | `npm run start:web` | `http://127.0.0.1:3000` | `http://127.0.0.1:3001/v1` |
+| 桌面程序无界面模式 | `<已安装程序> --web` | `http://127.0.0.1:3000` | `http://127.0.0.1:3001/v1` |
+
+`--web` 与 Web 管理端跑的是同一套服务（`startServer`），区别只在宿主：它由桌面程序自身
+执行，因此沿用桌面端的数据目录和 Electron 的原生模块 ABI，不需要为 Node 重新编译
+`better-sqlite3`。桌面窗口与 `--web` 共用单实例锁，两者不能同时运行。
+开发时可用 `npx electron . --web` 验证同一入口。
 
 ## Gateway API (OpenAI Compatible)
 
@@ -42,6 +48,19 @@ Authorization: Bearer <token> (可选)
 `summarization` / `classification` / `extraction` / `translation` / `lightweight`，
 用于能力过滤和优先级路由；未传时回落到设置项 `default_task_type`，
 无法识别的取值按 `general` 处理（不会因此报错）。
+
+`messages[].content` 可以是字符串、`null`，或 OpenAI 多模态 parts 数组。
+数组元素按原样透传给上游服务商，网关只识别 `text` 与 `image_url`
+（`detail` 非 `low`/`high` 时归一为 `auto`），其余类型如 `input_audio` 不丢弃。
+形状不合法的 body（例如 `content` 是数字、空数组、缺 `text`/`image_url.url`）
+在进入调度器前返回 400 `BAD_REQUEST`。
+
+`top_p`、`stop`、`n`、`tool_choice`、`tools` 同样透传上游；`n` 目前只支持 1，
+传其它值返回 400 而不是静默只回一条。
+
+Ollama 没有结构化 content 字段：文本 parts 会被拼进 `content`，图片移入其 `images`
+数组（`data:…;base64,` 前缀会被剥掉）。http(s) 图片地址原样交给本机 Ollama 处理，
+网关自身不会去抓取它。
 
 #### 非流式响应 (200)
 
@@ -80,6 +99,17 @@ data: {"id":"req_...","object":"chat.completion.chunk","choices":[{"index":0,"de
 
 data: [DONE]
 ```
+
+#### reasoning_content
+
+推理型服务商（DeepSeek R1、OpenRouter、部分 vLLM 部署）在回答之外单独返回思维链。
+上游字段名并不统一（DeepSeek/Qwen/Kimi/vLLM 用 `reasoning_content`，OpenRouter 归一为
+`reasoning`），适配层两种都读，对外只发布 `reasoning_content`：非流式为
+`choices[].message.reasoning_content`，流式为 `choices[].delta.reasoning_content`；
+没有思维链时这两个字段不出现。
+`content` 只包含最终回答，因此只读 `content` 的客户端不会看到思维链文本，
+也不会在思维链阶段收到空帧（上游那些只有 `role` 或 `delta: {}` 的帧被丢弃）。
+上游未给出 usage 时，思维链计入 `completion_tokens` 估算，与服务商计费口径一致。
 
 #### 错误响应
 
@@ -148,14 +178,20 @@ GET /health
 `npm run start:web` 时在 `http://127.0.0.1:3000` 提供，与桌面端 IPC 一一对应，
 返回体统一为 `{ success, error?, ...}` 或直接是数据。
 
+鉴权分两档：默认（未设置 `ADMIN_TOKEN`）只允许本机访问，明文凭证仅能从 loopback 请求取回；
+一旦设置 `ADMIN_TOKEN`，所有 `/api/*` 都必须带 `Authorization: Bearer <token>`，
+而非 loopback 的 `ADMIN_HOST` 在没有令牌时会直接拒绝启动。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/app/version` / `/api/app/data-path` | 版本与数据目录 |
 | GET | `/api/providers` | 供应商列表（含 `quota`、`quotaRemaining`） |
 | GET | `/api/providers/:id` | 单个供应商详情 |
 | POST | `/api/providers/:id/test` | 连通性测试 |
-| POST/DELETE/GET | `/api/providers/:id/credential` | 主凭证读写与删除 |
-| GET/POST/DELETE | `/api/providers/:id/credentials[/:index]` | 多密钥槽位（最多 5 个） |
+| POST/DELETE | `/api/providers/:id/credential` | 主凭证写入与删除 |
+| GET | `/api/providers/:id/credential` | 主凭证**掩码** `{masked, hasCredential}`，永不返回明文 |
+| POST | `/api/providers/:id/credential/reveal` | 显式取回明文 `{credential\|null}`，非 loopback 需要 `ADMIN_TOKEN` |
+| GET/POST/DELETE | `/api/providers/:id/credentials[/:index]` | 多密钥槽位（最多 5 个，只给掩码） |
 | POST | `/api/providers/custom`、DELETE `/api/providers/:id` | 自定义供应商增删 |
 | POST | `/api/providers/:id/toggle` | 启用/禁用 |
 | PUT | `/api/providers/:id/base-url` | 单独修改 Base URL |
@@ -180,7 +216,7 @@ GET /health
 | `providers:get` | providerId | ProviderInfo | 获取单个服务商 |
 | `providers:test` | providerId | {success, error?} | 测试连接 |
 | `providers:set-credential` | (id, credential) | {success, error?} | 保存主凭证 |
-| `providers:get-credential` | (id, index?) | {credential\|null} | 取回明文凭证（仅本机） |
+| `providers:reveal-credential` | (id, index?) | {credential\|null} | 显式取回明文凭证（仅界面点击"显示"时调用） |
 | `providers:list-credentials` | providerId | {credentials[]} | 掩码后的密钥槽位 |
 | `providers:add-credential` | (id, credential) | {success, credentials?} | 追加备用密钥 |
 | `providers:remove-credential-slot` | (id, index) | {success, credentials?} | 删除指定槽位 |

@@ -4,6 +4,8 @@ import type {
   ProviderConfig,
   ProviderId,
   GatewayUsage,
+  GatewayToolCall,
+  GatewayToolCallDelta,
   SchedulerDecision,
 } from '../shared/types/index.js';
 import type { ProviderAdapter } from '../core/providers/contracts.js';
@@ -252,6 +254,8 @@ export class Scheduler {
     model: string;
     providerId: ProviderId;
     usage: GatewayUsage;
+    toolCalls?: GatewayToolCall[];
+    reasoningContent?: string;
     finishReason: string;
     durationMs: number;
   }> {
@@ -308,6 +312,9 @@ export class Scheduler {
       const chatOptions: ChatOptions = {
         maxTokens: request.maxTokens,
         temperature: request.temperature,
+        topP: request.topP,
+        stop: request.stop,
+        toolChoice: request.toolChoice,
         signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
         tools: request.tools,
         responseFormat: request.responseFormat,
@@ -411,8 +418,10 @@ export class Scheduler {
     options?: SchedulerOptions
   ): AsyncGenerator<{
     content?: string;
+    reasoningContent?: string;
     finishReason?: string;
     usage?: GatewayUsage;
+    toolCalls?: GatewayToolCallDelta[];
     model: string;
     providerId: ProviderId;
   }> {
@@ -454,6 +463,9 @@ export class Scheduler {
       const chatOptions: ChatOptions = {
         maxTokens: request.maxTokens,
         temperature: request.temperature,
+        topP: request.topP,
+        stop: request.stop,
+        toolChoice: request.toolChoice,
         signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
         tools: request.tools,
         responseFormat: request.responseFormat,
@@ -473,6 +485,7 @@ export class Scheduler {
       }
 
       let fullContent = '';
+      let fullReasoning = '';
       let upstreamUsage: GatewayUsage | null = null;
       let yieldedAny = false;
       const attemptStart = Date.now();
@@ -490,6 +503,9 @@ export class Scheduler {
           if (chunk.content) {
             fullContent += chunk.content;
           }
+          if (chunk.reasoningContent) {
+            fullReasoning += chunk.reasoningContent;
+          }
           if (chunk.usage) {
             upstreamUsage = chunk.usage;
           }
@@ -505,8 +521,10 @@ export class Scheduler {
           yieldedAny = true;
           yield {
             content: chunk.content,
+            reasoningContent: chunk.reasoningContent,
             finishReason: chunk.finishReason,
             usage: chunk.usage,
+            toolCalls: chunk.toolCalls,
             model: decision.model.id,
             providerId: decision.providerId,
           };
@@ -547,7 +565,10 @@ export class Scheduler {
 
       const promptTokens =
         upstreamUsage?.promptTokens ?? estimateMessagesTokens(request.messages);
-      const completionTokens = upstreamUsage?.completionTokens ?? estimateTokens(fullContent);
+      // Providers bill chain-of-thought as completion output, so the fallback estimate
+      // counts it even though it never reaches `content`.
+      const completionTokens =
+        upstreamUsage?.completionTokens ?? estimateTokens(fullContent + fullReasoning);
       const totalTokens = upstreamUsage?.totalTokens ?? promptTokens + completionTokens;
       const usage: GatewayUsage = { promptTokens, completionTokens, totalTokens };
 

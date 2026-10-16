@@ -14,8 +14,8 @@ const api = {
     test: (providerId: string) => invoke('providers:test', providerId),
     setCredential: (providerId: string, credential: string) =>
       invoke('providers:set-credential', providerId, credential),
-    getCredential: (providerId: string, index?: number) =>
-      invoke('providers:get-credential', providerId, index ?? 0),
+    revealCredential: (providerId: string, index?: number) =>
+      invoke('providers:reveal-credential', providerId, index ?? 0),
     listCredentials: (providerId: string) => invoke('providers:list-credentials', providerId),
     addCredential: (providerId: string, credential: string) =>
       invoke('providers:add-credential', providerId, credential),
