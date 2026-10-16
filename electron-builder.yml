@@ -14,12 +14,21 @@ files:
 
 asar: false
 
-# Distribution is via CI artefacts only. Without this electron-builder auto-detects the
-# GitHub repository from the git remote and, after building every target successfully,
-# fails the whole run demanding a GH_TOKEN for a publish step nobody asked for.
-# Must be `null`, not `never`: a string here is resolved as a publisher module name
-# (`electron-publisher-never`) and the build dies on require().
-publish: null
+# The update feed baked into every build, so `electron-updater` knows where to look.
+# `package.json` has no `repository` field, hence owner/repo spelled out here.
+#
+# This is only metadata: whether anything is *uploaded* is decided per invocation.
+# Branch builds go through scripts/package.mjs, which passes `--publish never`; the
+# tag-triggered `release` job in .github/workflows/ci.yml passes `--publish always`
+# and uploads `latest.yml` / `latest-mac.yml` + installers with the built-in token.
+#
+# Note the config file itself only accepts an object/array or `null` here - a string
+# like `never` is resolved as a publisher module name (`electron-publisher-never`).
+publish:
+  - provider: github
+    owner: kedamano
+    repo: FreeLLM-Hub
+    releaseType: release
 
 # better-sqlite3 ships a Node build for `npm start`; packaged apps need the Electron ABI.
 # electron-builder rewrites native deps for the target during packaging.

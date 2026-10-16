@@ -13,6 +13,7 @@ import { registerAllProviders, applyPersistedProviderEnabledFromSettings } from 
 import { hydrateQuotasFromSettings } from './services/provider-service.js';
 import { startLogRetentionSchedule } from '../usage/log-retention.js';
 import { oauthTokenSourceFor } from './services/oauth-service.js';
+import { getUpdateService, type UpdateState } from './services/update-service.js';
 import { getAppConfig } from '../core/config/app-config.js';
 
 export type { GatewayConfig } from './gateway/gateway-manager.js';
@@ -25,6 +26,7 @@ export class AppLifecycle {
   private shutdownPromise: Promise<void> | null = null;
   private shutdownComplete = false;
   private disposeLogRetention: () => void = () => {};
+  private disposeUpdateChecks: () => void = () => {};
 
   constructor() {
     this.scheduler = new Scheduler();
@@ -63,11 +65,49 @@ export class AppLifecycle {
 
     await this.gatewayManager.start();
 
+    const updater = getUpdateService();
     this.trayManager.createTray({
       onShow: () => this.windowManager.showMainWindow(),
       onHide: () => this.windowManager.hideMainWindow(),
       onQuit: () => app.quit(),
+      onCheckUpdate: () => {
+        void this.runUpdateCheck(true);
+      },
+      onInstallUpdate: () => {
+        this.trayManager.setUpdateStatus({ busy: false });
+        updater.install();
+      },
     });
+    this.publishUpdateState(updater.getState());
+    this.disposeUpdateChecks = updater.startAutoCheck();
+    // Staggered so a window open and a gateway bind are not competing with a feed
+    // request on first paint; the interval handler covers the long-running case.
+    setTimeout(() => void this.runUpdateCheck(false), 8000);
+  }
+
+  /** Manual (tray) or startup auto-check; both funnel the result back into the menu. */
+  private async runUpdateCheck(manual: boolean): Promise<UpdateState | null> {
+    const updater = getUpdateService();
+    if (!manual && !updater.isEnabled()) return null;
+    this.trayManager.setUpdateStatus({ busy: true });
+    const state = await updater.check(manual);
+    this.publishUpdateState(state);
+    return state;
+  }
+
+  private publishUpdateState(state: UpdateState): void {
+    // The renderer has no update UI yet, so the tray is the only surface: an in-flight
+    // state must grey the item, and a downloaded package must offer the restart.
+    const busy = state.phase === 'checking' || state.phase === 'downloading';
+    this.trayManager.setUpdateStatus({
+      busy,
+      readyVersion: state.phase === 'ready' ? state.version : null,
+      availableVersion: state.phase === 'available' ? state.version : null,
+    });
+    if (state.phase === 'available' || state.phase === 'downloading') {
+      // Follow the download to its end so the menu flips to "重启并安装更新".
+      setTimeout(() => this.publishUpdateState(getUpdateService().getState()), 4000);
+    }
   }
 
   private registerProviders(): void {
@@ -110,6 +150,7 @@ export class AppLifecycle {
     this.shutdownPromise = (async () => {
       console.log('[App] Shutting down...');
 
+      this.disposeUpdateChecks();
       this.disposeLogRetention();
       await this.gatewayManager.stop();
 

@@ -47,6 +47,16 @@ const platforms = [...new Set(requestedPlatforms.length > 0 ? requestedPlatforms
 
 const archFlags = ['--x64', '--arm64', '--ia32', '--universal'].filter((flag) => has(flag));
 
+function publishMode() {
+  const arg = args.find((entry) => entry.startsWith('--publish'));
+  if (!arg) return 'never';
+  const value = arg.includes('=') ? arg.split('=')[1] : args[args.indexOf(arg) + 1];
+  const mode = (value || '').trim();
+  if (mode === '' || mode === 'never') return 'never';
+  if (mode === 'always' || mode === 'onTag' || mode === 'onTagOrDraft') return mode;
+  fail(`未知的 --publish 模式: ${mode}（可用：never | always | onTag | onTagOrDraft）`);
+}
+
 function hostPlatform() {
   if (process.platform === 'darwin') return 'mac';
   if (process.platform === 'win32') return 'win';
@@ -64,12 +74,11 @@ const builderArgs = [];
 for (const platform of platforms) builderArgs.push(`--${platform}`);
 builderArgs.push(...archFlags);
 if (has('--dir')) builderArgs.push('--dir');
-// Publishing is opt-in. Left to itself, electron-builder infers a GitHub publish target
-// from the git remote and fails the run looking for GH_TOKEN *after* every artefact has
-// already been built. `--publish never` is the CLI enum; the config file needs `null`,
-// since a string there is resolved as a publisher module name.
-if (has('--publish')) builderArgs.push('--publish', 'onTagOrDraft');
-else builderArgs.push('--publish', 'never');
+// Publishing is opt-in. Left to itself, electron-builder resolves a GitHub publisher
+// from the git remote and dies looking for GH_TOKEN *after* every artefact has already
+// been built, so the default is explicit: `--publish never`.
+// A release run asks for it with `--publish always`.
+builderArgs.push('--publish', publishMode());
 
 if (!has('--skip-build')) {
   run('node', [join('scripts', 'build.mjs')]);

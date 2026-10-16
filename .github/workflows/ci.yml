@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+    # Pushing a v* tag publishes a real GitHub Release (installers + update manifests).
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -82,7 +84,12 @@ jobs:
   # from Linux/Windows, and Windows icon/signing edits need a Windows host.
   package:
     name: Package (${{ matrix.label }})
-    if: github.event_name == 'push' || github.event.inputs.package == 'true' || github.event_name == 'workflow_dispatch'
+    # Tag pushes are handled by the `release` jobs below, which publish instead of
+    # merely uploading.
+    if: >-
+      (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event.inputs.package == 'true'
     needs: [test, lint]
     runs-on: ${{ matrix.runs-on }}
     strategy:
@@ -153,5 +160,79 @@ jobs:
             echo ""
             echo '```'
             ls -la release 2>/dev/null || echo "release/ 未生成"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ─── Release on tag push ─────────────────────────────────────────────
+  # The release object is created once, up front: three matrix jobs publishing to the
+  # same tag would otherwise race on "create release" (GitHub answers 422), which looks
+  # like a flaky release pipeline. The logic lives in scripts/create-release.mjs rather
+  # than as inline shell so it stays readable and testable.
+  release-setup:
+    name: Create release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release-id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Create or reuse the release for this tag
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: node scripts/create-release.mjs
+
+  release:
+    name: Release (${{ matrix.label }})
+    needs: [release-setup, test, lint]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x64
+            runs-on: windows-latest
+            package-args: --win --x64
+          - label: linux
+            runs-on: ubuntu-latest
+            package-args: --linux --x64 --arm64
+          - label: macos
+            runs-on: macos-latest
+            package-args: --mac --x64 --arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      # --publish always uploads this platform installers plus the latest.yml /
+      # latest-mac.yml manifests electron-updater reads, so tagging a release is the
+      # only step a human has to remember.
+      - name: Build and publish ${{ matrix.label }}
+        run: node scripts/package.mjs ${{ matrix.package-args }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unsigned macOS builds must not try to auto-discover a keychain identity.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### Published (${{ matrix.label }})"
+            echo ""
+            echo '```'
+            ls -la release 2>/dev/null | tail -20 || echo "release/ was not produced"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

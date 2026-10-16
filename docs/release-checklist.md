@@ -71,3 +71,31 @@
 - [ ] API 文档与实际一致
 - [ ] 架构文档反映当前设计
 - [ ] 发布说明 (Release Notes) 完成
+
+## 自动更新（v0.1.1 起）
+
+发布源写在 `electron-builder.yml` 的 `publish` 段（github / kedamano / FreeLLM-Hub），
+构建时会被烧进安装包，`electron-updater` 靠它找 feed。是否**上传**由调用方式决定：
+
+- 分支构建：`node scripts/package.mjs --win` 默认 `--publish never`，只产出文件；
+- 发布构建：CI 的 `release` job 用 `--publish always`，上传安装包与
+  `latest.yml` / `latest-mac.yml`（以及 `.blockmap` 增量清单）。
+
+发版流程因此只剩两步：
+
+1. 改 `package.json` 的 `version`，提交并打标签 `git tag v<version> && git push origin v<version>`；
+2. 看 `release` / `release-setup` job 是否全绿（`scripts/create-release.mjs` 会先创建或复用
+   Release，避免三个平台同时抢着建同一个 tag）。
+
+发布后建议核对（本仓库曾踩过的坑）：
+
+- [ ] `curl -s https://api.github.com/repos/<owner>/<repo>/releases/latest` 里
+      `assets` 数量与预期一致：**未 finalize 的附件不会出现在公开视图里**（`state` 停在
+      `starter` 时要删掉重传，匿名视图是唯一能发现这点的角度）。
+- [ ] Release 下存在 `latest.yml`（Windows/Linux）与 `latest-mac.yml`（macOS），
+      且其中 `path`/`files[].url` 指向的附件名与实际附件名一致
+      （GitHub 会把附件名里的空格规范化成 `.`）。
+- [ ] macOS 用户视角：未公证版本仍会被 Gatekeeper 拦，自动更新同样要求先能装上首版。
+
+> 注意：**v0.1.0 不能自动升级到 v0.1.1** —— 那一版没有 updater 代码也没有发布源，
+> 必须手动安装。从 v0.1.1 起的版本之间才可以互相自动更新。

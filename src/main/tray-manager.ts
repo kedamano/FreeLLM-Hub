@@ -6,10 +6,24 @@ export interface TrayCallbacks {
   onShow: () => void;
   onHide: () => void;
   onQuit: () => void;
+  /** Self-update actions; omitted when the build has no update feed. */
+  onCheckUpdate?: () => void;
+  onInstallUpdate?: () => void;
+}
+
+export interface TrayUpdateStatus {
+  /** Set while a check or download is in flight, to grey the item out. */
+  busy?: boolean;
+  /** Present once an update package has been downloaded and verified. */
+  readyVersion?: string | null;
+  /** Version discovered but not yet downloaded, shown as a hint. */
+  availableVersion?: string | null;
 }
 
 export class TrayManager {
   private tray: Tray | null = null;
+  private callbacks: TrayCallbacks | null = null;
+  private updateStatus: TrayUpdateStatus = {};
 
   createTray(callbacks: TrayCallbacks): void {
     if (this.tray) return;
@@ -42,6 +56,24 @@ export class TrayManager {
 
   setContextMenu(callbacks: TrayCallbacks): void {
     if (!this.tray) return;
+    this.callbacks = callbacks;
+    this.rebuildMenu();
+  }
+
+  /**
+   * Reflect the updater state in the tray. The renderer still has no update UI, so
+   * the tray is where "检查更新" and "重启并安装更新" live; without this the user
+   * would have no way to apply a downloaded update other than quitting the app.
+   */
+  setUpdateStatus(status: TrayUpdateStatus): void {
+    this.updateStatus = status;
+    this.rebuildMenu();
+  }
+
+  private rebuildMenu(): void {
+    if (!this.tray || !this.callbacks) return;
+    const callbacks = this.callbacks;
+    const status = this.updateStatus;
 
     const template: Electron.MenuItemConstructorOptions[] = [
       { label: 'FreeLLM Hub', enabled: false },
@@ -50,15 +82,28 @@ export class TrayManager {
         label: '显示主窗口',
         click: () => callbacks.onShow(),
       },
-      { type: 'separator' },
-      {
-        label: '退出',
-        click: () => callbacks.onQuit(),
-      },
     ];
 
-    const contextMenu = Menu.buildFromTemplate(template);
-    this.tray.setContextMenu(contextMenu);
+    if (status.readyVersion) {
+      template.push({
+        label: `重启并安装更新 ${status.readyVersion}`,
+        click: () => callbacks.onInstallUpdate?.(),
+      });
+    } else if (callbacks.onCheckUpdate) {
+      template.push({
+        label: status.busy ? '检查更新中…' : '检查更新…',
+        enabled: !status.busy,
+        click: () => callbacks.onCheckUpdate?.(),
+      });
+    }
+
+    template.push({ type: 'separator' });
+    template.push({
+      label: '退出',
+      click: () => callbacks.onQuit(),
+    });
+
+    this.tray.setContextMenu(Menu.buildFromTemplate(template));
   }
 
   destroy(): void {
