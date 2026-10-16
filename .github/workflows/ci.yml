@@ -104,8 +104,11 @@ jobs:
           - label: linux-arm64
             runs-on: ubuntu-latest
             package-args: --linux --arm64
+            # Same patterns as linux-x64: the per-target arch pin is gone from the
+            # builder config, so this job really does produce deb + AppImage + tar.gz.
             artifact-pattern: |
-              release/*arm64*.AppImage
+              release/*.AppImage
+              release/*.deb
               release/*.tar.gz
           - label: macos-universal
             runs-on: macos-latest

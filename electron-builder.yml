@@ -17,7 +17,9 @@ asar: false
 # Distribution is via CI artefacts only. Without this electron-builder auto-detects the
 # GitHub repository from the git remote and, after building every target successfully,
 # fails the whole run demanding a GH_TOKEN for a publish step nobody asked for.
-publish: never
+# Must be `null`, not `never`: a string here is resolved as a publisher module name
+# (`electron-publisher-never`) and the build dies on require().
+publish: null
 
 # better-sqlite3 ships a Node build for `npm start`; packaged apps need the Electron ABI.
 # electron-builder rewrites native deps for the target during packaging.

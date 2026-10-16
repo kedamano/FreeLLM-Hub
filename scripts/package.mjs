@@ -64,7 +64,12 @@ const builderArgs = [];
 for (const platform of platforms) builderArgs.push(`--${platform}`);
 builderArgs.push(...archFlags);
 if (has('--dir')) builderArgs.push('--dir');
-if (has('--publish')) builderArgs.push('--publish');
+// Publishing is opt-in. Left to itself, electron-builder infers a GitHub publish target
+// from the git remote and fails the run looking for GH_TOKEN *after* every artefact has
+// already been built. `--publish never` is the CLI enum; the config file needs `null`,
+// since a string there is resolved as a publisher module name.
+if (has('--publish')) builderArgs.push('--publish', 'onTagOrDraft');
+else builderArgs.push('--publish', 'never');
 
 if (!has('--skip-build')) {
   run('node', [join('scripts', 'build.mjs')]);
