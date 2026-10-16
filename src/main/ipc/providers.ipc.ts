@@ -15,8 +15,17 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
   registerIpcHandler('providers:set-credential', async (_e, providerId: string, credential: string) =>
     providerService.setProviderCredential(providerId, credential)
   );
-  registerIpcHandler('providers:get-credential', async (_e, providerId: string) =>
-    providerService.getProviderCredential(providerId)
+  registerIpcHandler('providers:get-credential', async (_e, providerId: string, index?: number) =>
+    providerService.getProviderCredential(providerId, index)
+  );
+  registerIpcHandler('providers:list-credentials', async (_e, providerId: string) =>
+    providerService.listProviderCredentials(providerId)
+  );
+  registerIpcHandler('providers:add-credential', async (_e, providerId: string, credential: string) =>
+    providerService.addProviderCredential(providerId, credential)
+  );
+  registerIpcHandler('providers:remove-credential-slot', async (_e, providerId: string, index: number) =>
+    providerService.removeProviderCredentialSlot(providerId, index)
   );
   registerIpcHandler('providers:remove-credential', async (_e, providerId: string) =>
     providerService.removeProviderCredential(providerId)

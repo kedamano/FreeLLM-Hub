@@ -11,6 +11,7 @@ import type {
 } from '../contracts.js';
 import type { AuthType, ProviderConfigField, ProviderReadiness } from '../../../shared/types/index.js';
 import { estimateTokenCount } from '../../../shared/utils/index.js';
+import { ProviderError } from '../../../shared/errors/index.js';
 import { credentialKeyFor } from '../credential-keys.js';
 import {
   mapHttpError,
@@ -63,6 +64,8 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   private resolveBaseUrl?: (settings: Record<string, unknown>) => string | null;
   private builtIn: boolean;
   private enabled = true;
+  private credentials: string[] = [];
+  private credentialCursor = 0;
 
   constructor(config: OpenAICompatibleConfig) {
     this.providerId = config.providerId;
@@ -112,11 +115,37 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
 
   setCredential(credential: string | undefined, credentialId?: string): void {
     this.credentialId = credential ? credentialId || this.credentialId || credentialKeyFor(this.providerId) : undefined;
+    this.credentials = credential ? [credential] : [];
+    this.credentialCursor = 0;
     if (credential) {
       this.defaultHeaders = { ...this.defaultHeaders, Authorization: `Bearer ${credential}` };
     } else {
       delete this.defaultHeaders.Authorization;
     }
+  }
+
+  /** Replace the full key pool; the first key becomes active. */
+  setCredentials(credentials: string[]): void {
+    const cleaned = credentials.filter((c) => typeof c === 'string' && c.trim().length > 0);
+    this.credentials = cleaned;
+    this.credentialCursor = 0;
+    if (cleaned.length > 0) {
+      this.credentialId = this.credentialId || credentialKeyFor(this.providerId);
+      this.defaultHeaders = { ...this.defaultHeaders, Authorization: `Bearer ${cleaned[0]}` };
+    } else {
+      this.credentialId = undefined;
+      delete this.defaultHeaders.Authorization;
+    }
+  }
+
+  private rotateCredential(): boolean {
+    if (this.credentials.length < 2) return false;
+    this.credentialCursor = (this.credentialCursor + 1) % this.credentials.length;
+    this.defaultHeaders = {
+      ...this.defaultHeaders,
+      Authorization: `Bearer ${this.credentials[this.credentialCursor]}`,
+    };
+    return true;
   }
 
   updateBaseUrl(baseUrl: string): void {
@@ -250,26 +279,29 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     options?: ChatOptions
   ): Promise<{ content: string; usage: GatewayUsage; finishReason: string }> {
     const body = this.buildChatBody(messages, model, options, false);
-    let response: Response;
-    try {
-      response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(body),
-        signal: withRequestTimeout(options?.signal),
-      });
-    } catch (err) {
-      throw mapNetworkError(this.providerId, err);
-    }
-
-    if (!response.ok) {
+    const maxAttempts = Math.max(1, this.credentials.length);
+    let response: Response | undefined;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(body),
+          signal: withRequestTimeout(options?.signal),
+        });
+      } catch (err) {
+        throw mapNetworkError(this.providerId, err);
+      }
+      if (response.ok) break;
       const errorText = await response.text();
-      throw mapHttpError(
+      const error = mapHttpError(
         this.providerId,
         response.status,
         errorText,
         parseRetryAfterMs(response.headers.get('retry-after'))
       );
+      if (attempt + 1 < maxAttempts && this.isKeyRetryable(error) && this.rotateCredential()) continue;
+      throw error;
     }
 
     const result = (await response.json()) as {
@@ -297,26 +329,31 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     options?: ChatOptions
   ): AsyncIterable<StreamChunk> {
     const body = this.buildChatBody(messages, model, options, true);
-    let response: Response;
-    try {
-      response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(body),
-        signal: withRequestTimeout(options?.signal),
-      });
-    } catch (err) {
-      throw mapNetworkError(this.providerId, err);
-    }
-
-    if (!response.ok || !response.body) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      throw mapHttpError(
-        this.providerId,
-        response.status,
-        errorText,
-        parseRetryAfterMs(response.headers.get('retry-after'))
-      );
+    const maxAttempts = Math.max(1, this.credentials.length);
+    let response: Response | undefined;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(body),
+          signal: withRequestTimeout(options?.signal),
+        });
+      } catch (err) {
+        throw mapNetworkError(this.providerId, err);
+      }
+      if (response.ok && response.body) break;
+      const errorText = response.ok ? 'Empty response body' : await response.text().catch(() => 'Unknown error');
+      const error = response.ok
+        ? new ProviderError(`Provider ${this.providerId} returned no stream`, this.providerId, 'SERVER_ERROR')
+        : mapHttpError(
+            this.providerId,
+            response.status,
+            errorText,
+            parseRetryAfterMs(response.headers.get('retry-after'))
+          );
+      if (attempt + 1 < maxAttempts && this.isKeyRetryable(error) && this.rotateCredential()) continue;
+      throw error;
     }
 
     const reader = response.body.getReader();
@@ -399,6 +436,10 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
 
   async getUsageInfo(): Promise<ProviderUsageInfo> {
     return {};
+  }
+
+  private isKeyRetryable(err: ProviderError): boolean {
+    return (err.code === 'RATE_LIMITED' || err.code === 'AUTH_FAILED') && this.credentials.length > 1;
   }
 
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {

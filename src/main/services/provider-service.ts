@@ -8,9 +8,96 @@ import { redactSecrets } from '../security/secret-redaction.js';
 import { deleteSetting, writeSetting } from '../../core/settings/settings-store.js';
 import { getDatabase } from '../../core/database/database.js';
 
+export const MAX_CREDENTIALS_PER_PROVIDER = 5;
+
+function slotKeyFor(providerId: string, index: number): string {
+  return index === 0 ? `${providerId}-key` : `${providerId}-key-${index + 1}`;
+}
+
+function listCredentialKeys(providerId: string): string[] {
+  const store = getCredentialStore();
+  const keys: string[] = [];
+  if (store.has(`${providerId}-key`)) keys.push(`${providerId}-key`);
+  for (let i = 2; store.has(`${providerId}-key-${i}`); i++) {
+    keys.push(`${providerId}-key-${i}`);
+  }
+  return keys;
+}
+
+function maskKey(value: string | null): string {
+  if (!value) return '';
+  if (value.length <= 10) return `${value.slice(0, 2)}…`;
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function syncAdapterCredentials(providerId: string): void {
+  const adapter = getProviderRegistry().get(providerId);
+  if (!adapter) return;
+  const api = hotSwap(adapter);
+  if (typeof api.setCredentials !== 'function') return;
+  const store = getCredentialStore();
+  const values = listCredentialKeys(providerId)
+    .map((key) => store.retrieve(key))
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+  api.setCredentials(values);
+}
+
+export interface ProviderCredentialSlot {
+  index: number;
+  keyId: string;
+  masked: string;
+}
+
+export function listProviderCredentials(providerId: string): { credentials: ProviderCredentialSlot[] } {
+  const store = getCredentialStore();
+  return {
+    credentials: listCredentialKeys(providerId).map((keyId, index) => ({
+      index,
+      keyId,
+      masked: maskKey(store.retrieve(keyId)),
+    })),
+  };
+}
+
+export function addProviderCredential(
+  providerId: string,
+  credential: string
+): { success: boolean; error?: string; credentials?: ProviderCredentialSlot[] } {
+  if (!credential || typeof credential !== 'string' || !credential.trim()) {
+    return { success: false, error: 'Key 不能为空' };
+  }
+  const keys = listCredentialKeys(providerId);
+  if (keys.length >= MAX_CREDENTIALS_PER_PROVIDER) {
+    return { success: false, error: `每个供应商最多保存 ${MAX_CREDENTIALS_PER_PROVIDER} 个 Key` };
+  }
+  try {
+    getCredentialStore().store(slotKeyFor(providerId, keys.length), credential.trim());
+    syncAdapterCredentials(providerId);
+    return { success: true, credentials: listProviderCredentials(providerId).credentials };
+  } catch (err) {
+    return { success: false, error: redactSecrets(err instanceof Error ? err.message : '存储失败') };
+  }
+}
+
+export function removeProviderCredentialSlot(
+  providerId: string,
+  index: number
+): { success: boolean; error?: string; credentials?: ProviderCredentialSlot[] } {
+  const store = getCredentialStore();
+  const keys = listCredentialKeys(providerId);
+  if (!Number.isInteger(index) || index < 0 || index >= keys.length) {
+    return { success: false, error: 'Key 不存在' };
+  }
+  const values = keys.map((k) => store.retrieve(k)).filter((v): v is string => !!v);
+  values.splice(index, 1);
+  for (const k of keys) store.delete(k);
+  values.forEach((v, i) => store.store(slotKeyFor(providerId, i), v));
+  syncAdapterCredentials(providerId);
+  return { success: true, credentials: listProviderCredentials(providerId).credentials };
+}
+
 export function listProviders(scheduler: Scheduler) {
   const registry = getProviderRegistry();
-  const credentialStore = getCredentialStore();
   return registry.getAll().map((adapter) => {
     const config = adapter.getProviderConfig();
     scheduler.registerProviderConfig(config);
@@ -23,18 +110,17 @@ export function listProviders(scheduler: Scheduler) {
       isBuiltIn: config.isBuiltIn,
       credentialStatus: config.credentialStatus,
       metadata: config.metadata,
-      hasCredential: credentialStore.has(`${config.id}-key`),
+      hasCredential: listCredentialKeys(config.id).length > 0,
     };
   });
 }
 
 export function getProvider(providerId: string) {
   const registry = getProviderRegistry();
-  const credentialStore = getCredentialStore();
   const adapter = registry.get(providerId);
   if (!adapter) return null;
   const config = adapter.getProviderConfig();
-  return { ...config, hasCredential: credentialStore.has(`${config.id}-key`) };
+  return { ...config, hasCredential: listCredentialKeys(config.id).length > 0 };
 }
 
 export async function testProvider(providerId: string): Promise<{ success: boolean; error?: string }> {
@@ -59,19 +145,20 @@ export function setProviderCredential(
   }
   try {
     const credentialStore = getCredentialStore();
-    const credentialId = `${providerId}-key`;
-    credentialStore.store(credentialId, credential);
-    const adapter = getProviderRegistry().get(providerId);
-    if (adapter) applyCredential(adapter, credential, credentialId);
+    credentialStore.store(slotKeyFor(providerId, 0), credential);
+    syncAdapterCredentials(providerId);
     return { success: true };
   } catch (err) {
     return { success: false, error: redactSecrets(err instanceof Error ? err.message : 'Storage failed') };
   }
 }
 
-export function getProviderCredential(providerId: string): { credential: string | null } {
+export function getProviderCredential(
+  providerId: string,
+  index = 0
+): { credential: string | null } {
   try {
-    return { credential: getCredentialStore().retrieve(`${providerId}-key`) ?? null };
+    return { credential: getCredentialStore().retrieve(slotKeyFor(providerId, index)) ?? null };
   } catch {
     return { credential: null };
   }
@@ -80,7 +167,9 @@ export function getProviderCredential(providerId: string): { credential: string 
 export function removeProviderCredential(providerId: string): { success: boolean } {
   try {
     const credentialStore = getCredentialStore();
-    const result = credentialStore.delete(`${providerId}-key`);
+    const keys = listCredentialKeys(providerId);
+    let result = false;
+    for (const key of keys) result = credentialStore.delete(key) || result;
     const adapter = getProviderRegistry().get(providerId);
     if (adapter) applyCredential(adapter, undefined, undefined);
     return { success: result };
@@ -178,7 +267,8 @@ export function deleteCustomProvider(scheduler: Scheduler, providerId: string): 
 
   registry.unregister(providerId);
   try {
-    getCredentialStore().delete(`${providerId}-key`);
+    const store = getCredentialStore();
+    for (const key of listCredentialKeys(providerId)) store.delete(key);
   } catch {
     // credential store may be unavailable; provider row removal still proceeds
   }

@@ -47,8 +47,26 @@ function createHttpApi(): FreeLLMApi {
         postJson<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/test`),
       setCredential: (providerId: string, credential: string) =>
         postJson<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { credential }),
-      getCredential: (providerId: string) =>
-        http<{ credential: string | null }>(`/providers/${seg(providerId)}/credential`),
+      getCredential: (providerId: string, index?: number) =>
+        http<{ credential: string | null }>(
+          `/providers/${seg(providerId)}/credential?index=${index ?? 0}`
+        ),
+      listCredentials: (providerId: string) =>
+        http<{ credentials: Array<{ index: number; keyId: string; masked: string }> }>(
+          `/providers/${seg(providerId)}/credentials`
+        ),
+      addCredential: (providerId: string, credential: string) =>
+        postJson<{
+          success: boolean;
+          error?: string;
+          credentials?: Array<{ index: number; keyId: string; masked: string }>;
+        }>(`/providers/${seg(providerId)}/credentials`, { credential }),
+      removeCredentialSlot: (providerId: string, index: number) =>
+        http<{
+          success: boolean;
+          error?: string;
+          credentials?: Array<{ index: number; keyId: string; masked: string }>;
+        }>(`/providers/${seg(providerId)}/credentials/${index}`, { method: 'DELETE' }),
       removeCredential: (providerId: string) =>
         http<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { method: 'DELETE' }),
       toggle: (providerId: string, enabled: boolean) =>

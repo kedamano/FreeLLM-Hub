@@ -49,8 +49,28 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
     providerService.removeProviderCredential(request.params.id)
   );
 
-  app.get<{ Params: { id: string } }>('/api/providers/:id/credential', async (request) =>
-    providerService.getProviderCredential(request.params.id)
+  app.get<{ Params: { id: string }; Querystring: { index?: string } }>(
+    '/api/providers/:id/credential',
+    async (request) =>
+      providerService.getProviderCredential(request.params.id, Number(request.query.index) || 0)
+  );
+
+  app.get<{ Params: { id: string } }>('/api/providers/:id/credentials', async (request) =>
+    providerService.listProviderCredentials(request.params.id)
+  );
+
+  app.post<{ Params: { id: string }; Body: { credential?: string } }>(
+    '/api/providers/:id/credentials',
+    async (request) => {
+      const credential = typeof request.body?.credential === 'string' ? request.body.credential : '';
+      return providerService.addProviderCredential(request.params.id, credential);
+    }
+  );
+
+  app.delete<{ Params: { id: string; index: string } }>(
+    '/api/providers/:id/credentials/:index',
+    async (request) =>
+      providerService.removeProviderCredentialSlot(request.params.id, Number(request.params.index))
   );
 
   app.post<{ Body: { name?: string; baseUrl?: string; apiKey?: string } }>(

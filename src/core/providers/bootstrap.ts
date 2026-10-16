@@ -29,6 +29,7 @@ interface ReadCredentialStore {
 interface HotSwapAdapter {
   setEnabled?(enabled: boolean): void;
   setCredential?(credential: string | undefined, credentialId?: string): void;
+  setCredentials?(credentials: string[]): void;
   updateBaseUrl?(baseUrl: string): void;
 }
 
@@ -51,6 +52,18 @@ export function applyCredential(adapter: ProviderAdapter, credential: string | u
 }
 
 export const ENABLED_KEY_PREFIX = 'provider-enabled:';
+
+export function collectSlotCredentials(store: ReadCredentialStore, providerId: string): string[] {
+  const values: string[] = [];
+  const primary = store.retrieve(`${providerId}-key`);
+  if (primary) values.push(primary);
+  for (let i = 2; ; i++) {
+    const extra = store.retrieve(`${providerId}-key-${i}`);
+    if (!extra) break;
+    values.push(extra);
+  }
+  return values;
+}
 
 export function registerAllProviders(registry: ProviderRegistry, credentialStore: ReadCredentialStore): void {
   const ollamaKey = 'ollama-config';
@@ -115,6 +128,13 @@ export function registerAllProviders(registry: ProviderRegistry, credentialStore
   registry.register(createMiniMaxAdapter(minimaxKey || undefined));
 
   registerCustomProvidersFromDb(registry, credentialStore);
+
+  for (const adapter of registry.getAll()) {
+    const api = hotSwap(adapter);
+    if (typeof api.setCredentials !== 'function') continue;
+    const values = collectSlotCredentials(credentialStore, adapter.providerId);
+    if (values.length > 1) api.setCredentials(values);
+  }
 
   console.log(`[Providers] Registered ${registry.getAll().length} providers`);
 }

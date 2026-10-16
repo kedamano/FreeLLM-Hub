@@ -7,8 +7,14 @@ const api = {
     test: (providerId: string) => ipcRenderer.invoke('providers:test', providerId),
     setCredential: (providerId: string, credential: string) =>
       ipcRenderer.invoke('providers:set-credential', providerId, credential),
-    getCredential: (providerId: string) =>
-      ipcRenderer.invoke('providers:get-credential', providerId),
+    getCredential: (providerId: string, index?: number) =>
+      ipcRenderer.invoke('providers:get-credential', providerId, index ?? 0),
+    listCredentials: (providerId: string) =>
+      ipcRenderer.invoke('providers:list-credentials', providerId),
+    addCredential: (providerId: string, credential: string) =>
+      ipcRenderer.invoke('providers:add-credential', providerId, credential),
+    removeCredentialSlot: (providerId: string, index: number) =>
+      ipcRenderer.invoke('providers:remove-credential-slot', providerId, index),
     removeCredential: (providerId: string) =>
       ipcRenderer.invoke('providers:remove-credential', providerId),
     toggle: (providerId: string, enabled: boolean) =>

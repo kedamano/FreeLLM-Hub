@@ -36,6 +36,12 @@ interface ProviderModel {
   status: string;
 }
 
+interface CredentialSlot {
+  index: number;
+  keyId: string;
+  masked: string;
+}
+
 type ProviderGroup = 'local' | 'cloud' | 'custom';
 
 interface GroupDef {
@@ -212,6 +218,12 @@ export default function ProvidersPage() {
   const [keyIsMasked, setKeyIsMasked] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Multi-key state
+  const [savedKeys, setSavedKeys] = useState<CredentialSlot[]>([]);
+  const [revealedKeys, setRevealedKeys] = useState<Record<number, string>>({});
+  const [backupInput, setBackupInput] = useState('');
+  const [addingBackup, setAddingBackup] = useState(false);
+
   // Model discovery
   const [discoveredModels, setDiscoveredModels] = useState<ProviderModel[]>([]);
   const [discovering, setDiscovering] = useState(false);
@@ -288,6 +300,8 @@ export default function ProvidersPage() {
       setShowKey(false);
       setDiscoveredModels([]);
       setDiscoverError(null);
+      setRevealedKeys({});
+      setBackupInput('');
     }
   }, [selectedId, providers]);
 
@@ -312,6 +326,28 @@ export default function ProvidersPage() {
       cancelled = true;
     };
   }, [selectedId]);
+
+  // Keep the saved-key list in sync with the selected provider.
+  useEffect(() => {
+    if (!selectedId) {
+      setSavedKeys([]);
+      return;
+    }
+    const api = getFreellmApi();
+    if (!api) return;
+    let cancelled = false;
+    api.providers
+      .listCredentials(selectedId)
+      .then((res) => {
+        if (!cancelled) setSavedKeys(res?.credentials ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setSavedKeys([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, providers]);
 
   //── Derived state ─────────────────────────────────────────────────
 
@@ -414,6 +450,75 @@ export default function ProvidersPage() {
       showToast('error', '清除凭证失败');
     }
   }, [selectedId, loadProviders, showToast, requireApi]);
+
+  const handleAddBackupKey = useCallback(async () => {
+    if (!selectedId || !backupInput.trim()) return;
+    const api = requireApi();
+    if (!api) return;
+    setAddingBackup(true);
+    try {
+      const res = await api.providers.addCredential(selectedId, backupInput.trim());
+      if (!res.success) {
+        showToast('error', res.error || '添加失败');
+      } else {
+        setSavedKeys(res.credentials ?? []);
+        setBackupInput('');
+        showToast('success', '备用 Key 已添加，限流时将自动轮换');
+        await loadProviders();
+      }
+    } catch {
+      showToast('error', '添加失败');
+    }
+    setAddingBackup(false);
+  }, [selectedId, backupInput, loadProviders, showToast, requireApi]);
+
+  const handleRemoveKeySlot = useCallback(
+    async (index: number) => {
+      if (!selectedId) return;
+      const api = requireApi();
+      if (!api) return;
+      if (!window.confirm(`确定删除 Key ${index + 1}？其余 Key 会自动补位。`)) return;
+      try {
+        const res = await api.providers.removeCredentialSlot(selectedId, index);
+        if (!res.success) {
+          showToast('error', res.error || '删除失败');
+          return;
+        }
+        setSavedKeys(res.credentials ?? []);
+        setRevealedKeys({});
+        if (index === 0) {
+          setApiKey('');
+          setKeyIsMasked(false);
+          setShowKey(false);
+        }
+        await loadProviders();
+      } catch {
+        showToast('error', '删除失败');
+      }
+    },
+    [selectedId, loadProviders, showToast, requireApi]
+  );
+
+  const handleRevealKey = useCallback(
+    async (index: number) => {
+      if (!selectedId) return;
+      if (revealedKeys[index] !== undefined) {
+        const next = { ...revealedKeys };
+        delete next[index];
+        setRevealedKeys(next);
+        return;
+      }
+      const api = getFreellmApi();
+      if (!api) return;
+      try {
+        const res = await api.providers.getCredential(selectedId, index);
+        setRevealedKeys((prev) => ({ ...prev, [index]: res?.credential ?? '' }));
+      } catch {
+        // keep masked if reveal fails
+      }
+    },
+    [selectedId, revealedKeys]
+  );
 
   const handleUpdateBaseUrl = useCallback(async () => {
     if (!selectedId) return;
@@ -649,6 +754,14 @@ export default function ProvidersPage() {
               saving={saving}
               onSaveCredential={handleSaveCredential}
               onRemoveCredential={handleRemoveCredential}
+              savedKeys={savedKeys}
+              revealedKeys={revealedKeys}
+              backupInput={backupInput}
+              onBackupInputChange={setBackupInput}
+              addingBackup={addingBackup}
+              onAddBackup={handleAddBackupKey}
+              onRemoveKeySlot={handleRemoveKeySlot}
+              onRevealKey={handleRevealKey}
               onUpdateBaseUrl={handleUpdateBaseUrl}
               onTest={handleTest}
               onToggle={handleToggle}
@@ -736,6 +849,14 @@ interface ConfigPanelProps {
   saving: boolean;
   onSaveCredential: () => Promise<void>;
   onRemoveCredential: () => Promise<void>;
+  savedKeys: CredentialSlot[];
+  revealedKeys: Record<number, string>;
+  backupInput: string;
+  onBackupInputChange: (value: string) => void;
+  addingBackup: boolean;
+  onAddBackup: () => void;
+  onRemoveKeySlot: (index: number) => void;
+  onRevealKey: (index: number) => void;
   onUpdateBaseUrl: () => Promise<void>;
   onTest: () => Promise<void>;
   onToggle: (enabled: boolean) => Promise<void>;
@@ -758,6 +879,14 @@ const ConfigPanel = memo(function ConfigPanel({
   saving,
   onSaveCredential,
   onRemoveCredential,
+  savedKeys,
+  revealedKeys,
+  backupInput,
+  onBackupInputChange,
+  addingBackup,
+  onAddBackup,
+  onRemoveKeySlot,
+  onRevealKey,
   onUpdateBaseUrl,
   onTest,
   onToggle,
@@ -860,6 +989,57 @@ const ConfigPanel = memo(function ConfigPanel({
                 清除
               </button>
             )}
+          </div>
+
+          {savedKeys.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              <div className="text-[11px] text-surface-400">已保存的 Key（限流 / 失效时自动轮换）</div>
+              {savedKeys.map((k) => (
+                <div
+                  key={k.keyId}
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-surface-50 border border-surface-100"
+                >
+                  <span className="text-[10px] font-semibold text-surface-500 shrink-0">
+                    Key {k.index + 1}
+                    {k.index === 0 ? '（主）' : ''}
+                  </span>
+                  <span className="flex-1 text-xs font-mono text-surface-600 truncate">
+                    {revealedKeys[k.index] ?? k.masked}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onRevealKey(k.index)}
+                    className="text-[11px] text-surface-400 hover:text-surface-600 shrink-0"
+                  >
+                    {revealedKeys[k.index] !== undefined ? '隐藏' : '显示'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRemoveKeySlot(k.index)}
+                    className="text-[11px] text-red-400 hover:text-red-600 shrink-0"
+                  >
+                    删除
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-3 flex gap-2">
+            <input
+              type="password"
+              value={backupInput}
+              onChange={(e) => onBackupInputChange(e.target.value)}
+              placeholder="添加备用 Key（可选）"
+              className="input-field flex-1 font-mono text-xs"
+            />
+            <button
+              onClick={onAddBackup}
+              disabled={addingBackup || !backupInput.trim()}
+              className="btn-secondary text-xs shrink-0"
+            >
+              {addingBackup ? '添加中…' : '＋ 添加备用'}
+            </button>
           </div>
         </div>
       )}
