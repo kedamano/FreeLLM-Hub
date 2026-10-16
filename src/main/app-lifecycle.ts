@@ -17,6 +17,11 @@ import {
   createCloudflareAdapter,
   createHuggingFaceAdapter,
   createCerebrasAdapter,
+  createSiliconFlowAdapter,
+  createNvidiaAdapter,
+  createOpenRouterAdapter,
+  createModelScopeAdapter,
+  createSenseNovaAdapter,
 } from '../core/providers/index.js';
 import { getAppConfig } from '../core/config/app-config.js';
 
@@ -150,6 +155,21 @@ export class AppLifecycle {
 
     const cerebrasKey = credentialStore.retrieve('cerebras-key');
     registry.register(createCerebrasAdapter(cerebrasKey || undefined));
+
+    const siliconflowKey = credentialStore.retrieve('siliconflow-key');
+    registry.register(createSiliconFlowAdapter(siliconflowKey || undefined));
+
+    const nvidiaKey = credentialStore.retrieve('nvidia-key');
+    registry.register(createNvidiaAdapter(nvidiaKey || undefined));
+
+    const openrouterKey = credentialStore.retrieve('openrouter-key');
+    registry.register(createOpenRouterAdapter(openrouterKey || undefined));
+
+    const modelscopeKey = credentialStore.retrieve('modelscope-key');
+    registry.register(createModelScopeAdapter(modelscopeKey || undefined));
+
+    const sensenovaKey = credentialStore.retrieve('sensenova-key');
+    registry.register(createSenseNovaAdapter(sensenovaKey || undefined));
 
     console.log(`[Providers] Registered ${registry.getAll().length} providers`);
   }
