@@ -31,7 +31,7 @@ async function main() {
 
   const tscMain = spawnChild(npx, ['tsc', '-p', 'tsconfig.main.json', '--watch', '--preserveWatchOutput']);
   const vite = spawnChild(npx, ['vite', '--port', '5173']);
-  const server = spawnChild(process.platform === 'win32' ? 'node.cmd' : 'node', ['scripts/run-web.mjs'], {
+  const server = spawnChild('node', ['scripts/run-web.mjs'], {
     env: { ...process.env },
   });
 
