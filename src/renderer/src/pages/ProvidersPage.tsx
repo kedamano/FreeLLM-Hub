@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import { getFreellmApi } from '../hooks/useIPC';
 import { assertOk, unwrapOrThrow } from '../lib/ipc-result';
 import { LoadingState, ErrorState } from '../components/ErrorBoundary';
+import OAuthPanel from '../components/OAuthPanel';
+import type { OAuthCredentialState } from '../../../shared/types/observability.js';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -28,6 +30,7 @@ interface ProviderInfo {
   baseUrlDerived?: boolean;
   quota?: { maxRequestsPerDay?: number; maxTokensPerDay?: number };
   quotaRemaining?: { requests?: number; tokens?: number; unlimited: boolean };
+  oauth?: OAuthCredentialState | null;
   metadata?: { description?: string };
 }
 
@@ -872,6 +875,7 @@ export default function ProvidersPage() {
                 field === 'requests' ? setQuotaRequests(value) : setQuotaTokens(value)
               }
               onSaveQuota={handleSaveQuota}
+              onReload={() => void loadProviders()}
               onTest={handleTest}
               onToggle={handleToggle}
               onDeleteCustom={selectedProvider && !selectedProvider.isBuiltIn ? handleDeleteCustom : undefined}
@@ -974,6 +978,8 @@ interface ConfigPanelProps {
   quotaTokens: string;
   onQuotaChange: (field: 'requests' | 'tokens', value: string) => void;
   onSaveQuota: () => Promise<void>;
+  /** Re-read providers from the main process, e.g. after an OAuth round-trip. */
+  onReload: () => void;
   onTest: () => Promise<void>;
   onToggle: (enabled: boolean) => Promise<void>;
   onDeleteCustom?: () => Promise<void>;
@@ -1011,6 +1017,7 @@ const ConfigPanel = memo(function ConfigPanel({
   quotaTokens,
   onQuotaChange,
   onSaveQuota,
+  onReload,
   onTest,
   onToggle,
   onDeleteCustom,
@@ -1156,6 +1163,15 @@ const ConfigPanel = memo(function ConfigPanel({
           </p>
         )}
       </div>
+
+      {/* OAuth: short-lived tokens that the app refreshes automatically */}
+      <OAuthPanel
+        providerId={provider.id}
+        displayName={provider.displayName}
+        settings={provider.settings ?? {}}
+        credential={provider.oauth}
+        onChanged={onReload}
+      />
 
       {/* API Format: fixed per provider, shown read-only */}
       <div className="mb-4">

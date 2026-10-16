@@ -4,10 +4,11 @@ import Dashboard from './pages/Dashboard';
 import ProvidersPage from './pages/ProvidersPage';
 import ModelsPage from './pages/ModelsPage';
 import UsagePage from './pages/UsagePage';
+import AuditPage from './pages/AuditPage';
+import ProfilesPage from './pages/ProfilesPage';
 import SettingsPage from './pages/SettingsPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
-
-type Page = 'dashboard' | 'providers' | 'models' | 'usage' | 'settings';
+import type { Page } from './lib/nav';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
@@ -29,6 +30,8 @@ export default function App() {
           {currentPage === 'providers' && <ProvidersPage />}
           {currentPage === 'models' && <ModelsPage />}
           {currentPage === 'usage' && <UsagePage />}
+          {currentPage === 'audit' && <AuditPage />}
+          {currentPage === 'profiles' && <ProfilesPage />}
           {currentPage === 'settings' && <SettingsPage />}
         </ErrorBoundary>
       </main>

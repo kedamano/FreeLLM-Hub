@@ -394,7 +394,8 @@ describe('Admin API', () => {
 
     const daily = await app.inject({ method: 'GET', url: '/api/usage/timeseries?days=7' });
     expect(daily.json()).toBeInstanceOf(Array);
-    expect(usageMocks.getDailyStats).toHaveBeenCalledWith(7);
+    // Usage queries are profile-scoped, so the active profile id travels with them.
+    expect(usageMocks.getDailyStats).toHaveBeenCalledWith(7, 'default');
   });
 
   it('returns scheduler status and circuit resets', async () => {

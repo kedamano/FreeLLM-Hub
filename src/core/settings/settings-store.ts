@@ -10,6 +10,9 @@ export const EDITABLE_SETTINGS_KEYS = new Set<string>([
   'log_level',
   'log_retention_days',
   'first_run_complete',
+  // Cost model inputs edited from the usage panel.
+  'cost_reference_price',
+  'currency_rates',
 ]);
 
 export const RESERVED_PREFIXES = [
@@ -19,6 +22,10 @@ export const RESERVED_PREFIXES = [
   'provider-baseurl:',
   'provider-settings:',
   'provider-quota:',
+  // Profile-scoped pool configuration and the active-profile pointer. Both are
+  // managed by profile-store, never by the generic settings editor.
+  'profile:',
+  'active_profile',
 ];
 
 export function isEditableKey(key: unknown): key is string {

@@ -6,12 +6,13 @@ import { closeDatabase, getDatabase } from '../core/database/database.js';
 import { getCredentialStore } from './security/credential-store.js';
 import { registerAllIpcHandlers } from './ipc/index.js';
 import { registerIpcHandler } from './ipc/handle.js';
-import { readSetting } from './ipc/settings.ipc.js';
+import { readProfileSetting, ensureProfilesSeeded } from '../core/settings/profile-store.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { getProviderRegistry } from '../core/providers/index.js';
 import { registerAllProviders, applyPersistedProviderEnabledFromSettings } from '../core/providers/bootstrap.js';
 import { hydrateQuotasFromSettings } from './services/provider-service.js';
 import { startLogRetentionSchedule } from '../usage/log-retention.js';
+import { oauthTokenSourceFor } from './services/oauth-service.js';
 import { getAppConfig } from '../core/config/app-config.js';
 
 export type { GatewayConfig } from './gateway/gateway-manager.js';
@@ -40,6 +41,8 @@ export class AppLifecycle {
 
     getDatabase();
     getCredentialStore();
+    // Materialise the `default` profile row before anything reads profile state.
+    ensureProfilesSeeded();
 
     this.gatewayManager.initialize();
 
@@ -68,7 +71,9 @@ export class AppLifecycle {
   }
 
   private registerProviders(): void {
-    registerAllProviders(getProviderRegistry(), getCredentialStore());
+    registerAllProviders(getProviderRegistry(), getCredentialStore(), {
+      tokenSourceFor: oauthTokenSourceFor,
+    });
   }
 
   private setupSecondInstance(): void {
@@ -92,7 +97,7 @@ export class AppLifecycle {
   }
 
   applyPersistedProviderEnabled(): void {
-    applyPersistedProviderEnabledFromSettings(readSetting);
+    applyPersistedProviderEnabledFromSettings(readProfileSetting);
   }
 
   isShutdownComplete(): boolean {

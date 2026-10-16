@@ -1,4 +1,5 @@
 import { deleteOldLogs } from './usage-recorder.js';
+import { deleteOldAuditRecords } from './audit-recorder.js';
 import { readSetting } from '../core/settings/settings-store.js';
 
 export const LOG_RETENTION_SETTING_KEY = 'log_retention_days';
@@ -11,10 +12,31 @@ export function resolveRetentionDays(raw: string | null = readSetting(LOG_RETENT
   return Math.min(Math.floor(days), 3650);
 }
 
-/** Delete call logs older than the configured retention window. Returns rows removed. */
+export interface PurgeResult {
+  callLogs: number;
+  auditRequests: number;
+}
+
+/**
+ * Delete call logs *and* the gateway audit trail older than the configured
+ * retention window. Auditing would otherwise grow without bound and quietly fill
+ * the user's disk, since it keeps an event row per routing decision.
+ */
 export function purgeOldLogs(now: number = Date.now(), days: number = resolveRetentionDays()): number {
   const cutoff = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
   return deleteOldLogs(cutoff);
+}
+
+export function purgeAuditAndLogs(now: number = Date.now(), days: number = resolveRetentionDays()): PurgeResult {
+  const cutoff = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+  const result: PurgeResult = { callLogs: 0, auditRequests: 0 };
+  result.callLogs = deleteOldLogs(cutoff);
+  try {
+    result.auditRequests = deleteOldAuditRecords(cutoff);
+  } catch {
+    /* audit table may be mid-migration on a first run; the next sweep retries */
+  }
+  return result;
 }
 
 /**
@@ -26,8 +48,12 @@ export function startLogRetentionSchedule(
 ): () => void {
   const sweep = () => {
     try {
-      const removed = purgeOldLogs();
-      if (removed > 0) console.log(`[Usage] 已清理 ${removed} 条过期调用记录`);
+      const removed = purgeAuditAndLogs();
+      if (removed.callLogs > 0 || removed.auditRequests > 0) {
+        console.log(
+          `[Usage] 已清理 ${removed.callLogs} 条过期调用记录、${removed.auditRequests} 条请求审计`
+        );
+      }
     } catch (err) {
       console.warn('[Usage] 调用记录清理失败:', err instanceof Error ? err.message : err);
     }

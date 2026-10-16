@@ -1,11 +1,11 @@
 import type { Scheduler } from '../../scheduler/scheduler.js';
 import { registerIpcHandler } from './handle.js';
-import { readSetting } from './settings.ipc.js';
+import { readProfileSetting } from '../../core/settings/profile-store.js';
 import { applyPersistedProviderEnabledFromSettings } from '../../core/providers/bootstrap.js';
 import * as providerService from '../services/provider-service.js';
 
 export function applyPersistedProviderEnabled(): void {
-  applyPersistedProviderEnabledFromSettings(readSetting);
+  applyPersistedProviderEnabledFromSettings(readProfileSetting);
 }
 
 export function registerProvidersIpc(scheduler: Scheduler): void {
@@ -53,5 +53,8 @@ export function registerProvidersIpc(scheduler: Scheduler): void {
   );
   registerIpcHandler('providers:delete-custom', async (_e, providerId: string) =>
     providerService.deleteCustomProvider(scheduler, providerId)
+  );
+  registerIpcHandler('providers:configure-oauth', async (_e, providerId: string, input) =>
+    providerService.configureOAuth(scheduler, providerId, input)
   );
 }

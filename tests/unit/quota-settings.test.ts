@@ -78,9 +78,18 @@ describe('quota settings', () => {
       [quotaSettingsKey('together')]: JSON.stringify({ maxTokensPerDay: 90_000 }),
     });
     const setQuotaConfig = vi.fn();
-    const scheduler = { setQuotaConfig } as unknown as Scheduler;
+    const clearConfig = vi.fn();
+    const scheduler = {
+      setQuotaConfig,
+      getQuotaManager: () => ({ clearConfig }),
+    } as unknown as Scheduler;
 
     const applied = applyQuotaConfigsFromSettings(scheduler, ['groq', 'openrouter', 'together'], read);
+
+    // A provider with no quota row in *this* profile must have any limit inherited from
+    // the previously active profile dropped, or switching pools would silently keep the
+    // old ceiling in force.
+    expect(clearConfig).toHaveBeenCalledWith('openrouter');
 
     expect(applied).toEqual(['groq', 'together']);
     expect(setQuotaConfig).toHaveBeenNthCalledWith(1, {

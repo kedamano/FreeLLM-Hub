@@ -38,6 +38,28 @@ export interface OpenAICompatibleConfig {
   resolveBaseUrl?: (settings: Record<string, unknown>) => string | null;
   /** User-created providers report isBuiltIn=false so the UI can group/delete them. */
   isBuiltIn?: boolean;
+  /**
+   * Short-lived credential source (OAuth). When present, `Authorization` is resolved
+   * per request instead of being pinned to a static key, and a 401 triggers one
+   * forced refresh before the error is surfaced.
+   */
+  tokenSource?: OAuthTokenSource;
+}
+
+export interface OAuthTokenStatus {
+  authorized: boolean;
+  expiresAt: string | null;
+  refreshable: boolean;
+  status: 'active' | 'expired' | 'revoked' | 'refreshing' | 'error' | 'unconfigured';
+}
+
+export interface OAuthTokenSource {
+  /** A usable access token, refreshed proactively when it is close to expiry. */
+  getToken(): Promise<string | null>;
+  /** Force a refresh after the upstream rejected the current token. */
+  refreshToken(): Promise<string | null>;
+  /** Cheap, non-decrypting snapshot for `getProviderConfig()`. */
+  status(): OAuthTokenStatus;
 }
 
 const BASE_URL_FIELD: ProviderConfigField = {
@@ -51,7 +73,11 @@ const BASE_URL_FIELD: ProviderConfigField = {
 export class OpenAICompatibleAdapter implements ProviderAdapter {
   readonly providerId: string;
   readonly providerName: string;
-  readonly authType: AuthType;
+  /**
+   * Not `readonly`: attaching an OAuth token source flips a provider from `api-key` to
+   * `oauth`, and the scheduler uses `authType` to decide whether a credential is needed.
+   */
+  authType: AuthType;
 
   private baseUrl: string;
   private apiVersion?: string;
@@ -66,6 +92,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   private enabled = true;
   private credentials: string[] = [];
   private credentialCursor = 0;
+  private tokenSource?: OAuthTokenSource;
 
   constructor(config: OpenAICompatibleConfig) {
     this.providerId = config.providerId;
@@ -79,6 +106,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     this.requiredSettings = config.requiredSettings || [];
     this.resolveBaseUrl = config.resolveBaseUrl;
     this.builtIn = config.isBuiltIn !== false;
+    this.tokenSource = config.tokenSource;
     this.baseUrl = this.computeBaseUrl(config.baseUrl);
     this.configFields = [
       BASE_URL_FIELD,
@@ -101,12 +129,32 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       apiVersion: this.apiVersion,
       isEnabled: this.enabled,
       isBuiltIn: this.builtIn,
-      credentialStatus: this.authType === 'none' ? 'configured' : this.credentialId ? 'configured' : 'unconfigured',
+      credentialStatus: this.resolveCredentialStatus(),
       credentialId: this.credentialId,
       settings: { ...this.settings },
       configFields: this.configFields,
       readiness: this.checkReadiness(),
     };
+  }
+
+  /**
+   * An OAuth provider is only "configured" once a token exists, and `expired` is a
+   * real state we can now report — previously that enum value was never written by
+   * anything, so the UI could not distinguish "signed out" from "token needs a spin".
+   */
+  private resolveCredentialStatus(): ProviderConfig['credentialStatus'] {
+    if (this.authType === 'none') return 'configured';
+    if (this.tokenSource) {
+      const status = this.tokenSource.status();
+      if (!status.authorized) return 'unconfigured';
+      if (status.status === 'expired' || status.status === 'revoked') return 'expired';
+      return 'valid';
+    }
+    return this.credentialId ? 'configured' : 'unconfigured';
+  }
+
+  getOAuthStatus(): OAuthTokenStatus | null {
+    return this.tokenSource?.status() ?? null;
   }
 
   setEnabled(enabled: boolean): void {
@@ -176,6 +224,23 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     this.credentialId = credentialId;
   }
 
+  /**
+   * Attach (or detach) an OAuth credential source after construction. Bootstrap uses
+   * this because whether a provider is OAuth is data — it lives in the provider's
+   * settings row — while adapters are built from factory code.
+   */
+  setTokenSource(source: OAuthTokenSource | undefined): void {
+    this.tokenSource = source;
+    if (source) {
+      this.authType = 'oauth';
+      this.credentialId = `${this.providerId}-oauth`;
+      delete this.defaultHeaders.Authorization;
+    } else if (this.authType === 'oauth') {
+      this.authType = 'api-key';
+      this.credentialId = undefined;
+    }
+  }
+
   checkReadiness(): ProviderReadiness {
     if (!this.enabled) return { ready: false, reason: '服务商已禁用' };
 
@@ -202,6 +267,16 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       return { ready: false, missingFields: ['credential'], reason: '尚未配置 API Key' };
     }
 
+    if (this.authType === 'oauth') {
+      const status = this.tokenSource?.status();
+      if (!status || !status.authorized) {
+        return { ready: false, missingFields: ['credential'], reason: '尚未完成 OAuth 授权' };
+      }
+      if (status.status === 'expired' || status.status === 'revoked') {
+        return { ready: false, missingFields: ['credential'], reason: 'OAuth 令牌已过期，请重新授权' };
+      }
+    }
+
     return { ready: true };
   }
 
@@ -210,7 +285,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     try {
       const response = await fetch(`${this.baseUrl}/models`, {
         method: 'GET',
-        headers: this.buildHeaders(),
+        headers: await this.buildRequestHeaders(),
         signal: AbortSignal.timeout(5000),
       });
       return response.ok;
@@ -234,7 +309,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     try {
       const response = await fetch(`${this.baseUrl}/models`, {
         method: 'GET',
-        headers: this.buildHeaders(),
+        headers: await this.buildRequestHeaders(),
         signal: AbortSignal.timeout(10000),
       });
 
@@ -259,7 +334,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
 
     try {
       const response = await fetch(`${this.baseUrl}/models/${modelId}`, {
-        headers: this.buildHeaders(),
+        headers: await this.buildRequestHeaders(),
         signal: AbortSignal.timeout(5000),
       });
       if (response.ok) {
@@ -281,11 +356,12 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     const body = this.buildChatBody(messages, model, options, false);
     const maxAttempts = Math.max(1, this.credentials.length);
     let response: Response | undefined;
+    let tokenRetried = false;
     for (let attempt = 0; ; attempt++) {
       try {
         response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
-          headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
+          headers: await this.buildRequestHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(body),
           signal: withRequestTimeout(options?.signal),
         });
@@ -300,6 +376,10 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         errorText,
         parseRetryAfterMs(response.headers.get('retry-after'))
       );
+      if (!tokenRetried && (await this.tryRefreshAfterRejection(error))) {
+        tokenRetried = true;
+        continue;
+      }
       if (attempt + 1 < maxAttempts && this.isKeyRetryable(error) && this.rotateCredential()) continue;
       throw error;
     }
@@ -331,11 +411,12 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     const body = this.buildChatBody(messages, model, options, true);
     const maxAttempts = Math.max(1, this.credentials.length);
     let response: Response | undefined;
+    let tokenRetried = false;
     for (let attempt = 0; ; attempt++) {
       try {
         response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
-          headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
+          headers: await this.buildRequestHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(body),
           signal: withRequestTimeout(options?.signal),
         });
@@ -352,6 +433,14 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
             errorText,
             parseRetryAfterMs(response.headers.get('retry-after'))
           );
+      if (
+        !tokenRetried &&
+        error instanceof ProviderError &&
+        (await this.tryRefreshAfterRejection(error))
+      ) {
+        tokenRetried = true;
+        continue;
+      }
       if (attempt + 1 < maxAttempts && this.isKeyRetryable(error) && this.rotateCredential()) continue;
       throw error;
     }
@@ -414,9 +503,14 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
 
   async validateCredential(credential?: string): Promise<{ valid: boolean; reason?: string }> {
     try {
+      // An explicit credential always wins (the UI "test this key" path); otherwise ask
+      // the OAuth source so testing an authorised provider does not send a bare request.
+      const headers = credential
+        ? this.buildHeaders({ Authorization: `Bearer ${credential}` })
+        : await this.buildRequestHeaders();
       const response = await fetch(`${this.baseUrl}/models`, {
         method: 'GET',
-        headers: this.buildHeaders(credential ? { Authorization: `Bearer ${credential}` } : {}),
+        headers,
         signal: AbortSignal.timeout(8000),
       });
 
@@ -448,6 +542,34 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       ...this.defaultHeaders,
       ...extra,
     };
+  }
+
+  /**
+   * Headers with the current credential resolved. For OAuth providers the access token
+   * may have been rotated since `defaultHeaders` was last written, so the header is
+   * rebuilt per request instead of cached.
+   */
+  private async buildRequestHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
+    if (!this.tokenSource) return this.buildHeaders(extra);
+    const token = await this.tokenSource.getToken();
+    const headers = this.buildHeaders(extra);
+    if (token) headers.Authorization = `Bearer ${token}`;
+    else delete headers.Authorization;
+    return headers;
+  }
+
+  /**
+   * An OAuth 401 is not "bad key" — it is an expired token the provider refused.
+   * Refresh once and replay; a second 401 is reported as AUTH_FAILED so the scheduler
+   * can fall back to another provider.
+   */
+  private async tryRefreshAfterRejection(err: ProviderError): Promise<boolean> {
+    if (!this.tokenSource) return false;
+    if (err.code !== 'AUTH_FAILED') return false;
+    const refreshed = await this.tokenSource.refreshToken().catch(() => null);
+    if (!refreshed) return false;
+    this.defaultHeaders = { ...this.defaultHeaders, Authorization: `Bearer ${refreshed}` };
+    return true;
   }
 
   private buildChatBody(

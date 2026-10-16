@@ -1,33 +1,12 @@
 import { memo, useEffect, useState } from 'react';
-import {
-  DashboardIcon,
-  ProviderIcon,
-  ModelIcon,
-  UsageIcon,
-  SettingsIcon,
-} from './Icons';
 import { getFreellmApi } from '../hooks/useIPC';
-
-type Page = 'dashboard' | 'providers' | 'models' | 'usage' | 'settings';
+import ProfileSwitcher from './ProfileSwitcher';
+import { NAV_ITEMS, type Page } from '../lib/nav';
 
 interface SidebarProps {
   currentPage: Page;
   onNavigate: (page: Page) => void;
 }
-
-interface NavItem {
-  id: Page;
-  label: string;
-  icon: React.ReactNode;
-}
-
-const navItems: NavItem[] = [
-  { id: 'dashboard', label: '仪表盘', icon: <DashboardIcon size={18} /> },
-  { id: 'providers', label: '服务商', icon: <ProviderIcon size={18} /> },
-  { id: 'models', label: '模型目录', icon: <ModelIcon size={18} /> },
-  { id: 'usage', label: '用量统计', icon: <UsageIcon size={18} /> },
-  { id: 'settings', label: '设置', icon: <SettingsIcon size={18} /> },
-];
 
 type GatewayState = 'running' | 'stopped' | 'unknown';
 
@@ -71,26 +50,29 @@ function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         <p className="text-[11px] text-surface-400 mt-1.5 ml-[42px] font-medium">大模型聚合管理平台</p>
       </div>
 
-      <nav className="flex-1 p-3 space-y-0.5">
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onNavigate(item.id)}
-            aria-current={currentPage === item.id ? 'page' : undefined}
-            className={`w-full text-left ${
-              currentPage === item.id ? 'sidebar-item-active' : ''
-            } sidebar-item`}
-          >
-            <span className={currentPage === item.id ? 'text-primary-600' : 'text-surface-400'}>
-              {item.icon}
-            </span>
-            <span>{item.label}</span>
-          </button>
-        ))}
+      <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+        {NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const active = currentPage === item.id;
+          return (
+            <button
+              key={item.id}
+              onClick={() => onNavigate(item.id)}
+              aria-current={active ? 'page' : undefined}
+              className={`w-full text-left ${active ? 'sidebar-item-active' : ''} sidebar-item`}
+            >
+              <span className={active ? 'text-primary-600' : 'text-surface-400'}>
+                <Icon size={18} />
+              </span>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
       </nav>
 
       <div className="p-3 border-t border-surface-100">
-        <div className="px-3 py-2 text-[11px] text-surface-400 font-medium space-y-0.5">
+        <ProfileSwitcher onManage={() => onNavigate('profiles')} />
+        <div className="px-3 pt-2 text-[11px] text-surface-400 font-medium space-y-0.5">
           <div>本地网关：{gatewayText}</div>
           <div>版本 0.1.0</div>
         </div>

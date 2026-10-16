@@ -4,6 +4,15 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve as resolvePath } from 'node:path';
 import { Scheduler } from '../../scheduler/scheduler.js';
 import { recordCall } from '../../usage/usage-recorder.js';
+import {
+  auditRejectedRequest,
+  beginRequestAudit,
+  completeRequestAudit,
+  recordAuditEvent,
+  type AuditEventType,
+  type AuditStatus,
+} from '../../usage/audit-recorder.js';
+import type { SchedulerTrace, TraceEvent } from '../../scheduler/trace.js';
 import { getProviderRegistry } from '../../core/providers/registry.js';
 import type {
   GatewayRequest,
@@ -25,6 +34,26 @@ import { registerCommonMiddleware } from './middleware.js';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const LOCAL_ORIGIN = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i;
+// `silent` is a valid pino level and is what the tests use to avoid touching disk.
+const LOG_LEVELS = new Set(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']);
+
+/** Inbound `X-Request-Id` is honoured but never trusted: length and charset are pinned. */
+function resolveRequestId(headerValue: unknown): string {
+  if (typeof headerValue === 'string') {
+    const value = headerValue.trim();
+    if (value.length > 0 && value.length <= 64 && /^[A-Za-z0-9_.:-]+$/.test(value)) return value;
+  }
+  return generateRequestId();
+}
+
+function resolveLogLevel(): string {
+  try {
+    const configured = getAppConfig().logLevel;
+    return LOG_LEVELS.has(configured) ? configured : 'info';
+  } catch {
+    return 'info';
+  }
+}
 
 function isSelfUrl(baseUrl: string | undefined, host: string, port: number): boolean {
   if (!baseUrl) return false;
@@ -76,8 +105,11 @@ export class GatewayServer {
     }
 
     this.app = Fastify({
+      // One id per request, generated before any hook runs, so the pino lines in
+      // gateway.log and the SQLite audit trail can finally be joined together.
+      genReqId: (request) => resolveRequestId(request.headers['x-request-id']),
       logger: {
-        level: 'info',
+        level: resolveLogLevel(),
         transport: {
           target: 'pino-pretty',
           options: { colorize: false, destination: resolveGatewayLogFile() },
@@ -100,6 +132,15 @@ export class GatewayServer {
 
         const authHeader = request.headers.authorization;
         if (!authHeader) {
+          auditRejectedRequest({
+            requestId: String(request.id),
+            route: request.routeOptions?.url ?? request.url,
+            method: request.method,
+            clientAddress: request.ip,
+            statusCode: 401,
+            errorCode: 'AUTH_REQUIRED',
+            errorMessage: 'Missing authorization header',
+          });
           return reply.status(401).send({
             error: { message: 'Missing authorization header. Use: Bearer <token>', type: 'auth_required' },
           });
@@ -107,6 +148,15 @@ export class GatewayServer {
 
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
         if (!this.authValidator!(token)) {
+          auditRejectedRequest({
+            requestId: String(request.id),
+            route: request.routeOptions?.url ?? request.url,
+            method: request.method,
+            clientAddress: request.ip,
+            statusCode: 403,
+            errorCode: 'AUTH_FAILED',
+            errorMessage: 'Invalid token',
+          });
           return reply.status(403).send({
             error: { message: 'Invalid token', type: 'auth_failed' },
           });
@@ -183,18 +233,33 @@ export class GatewayServer {
       version: '0.1.0',
     }));
 
-    this.app.get('/v1/models', async () => {
+    this.app.get('/v1/models', async (request) => {
+      const requestId = String(request.id);
+      const startedAt = Date.now();
+      beginRequestAudit({
+        requestId,
+        route: '/v1/models',
+        method: 'GET',
+        clientAddress: request.ip,
+      });
       const registry = getProviderRegistry();
       const adapters = registry.getAll();
       const models: Array<Record<string, unknown>> = [];
+      const skipped: Array<{ providerId: string; reason: string }> = [];
       const selfList = this.app!.addresses();
       const selfAddr = selfList.length > 0 ? selfList[0] : null;
 
       for (const adapter of adapters) {
         const config = adapter.getProviderConfig();
-        if (!config.isEnabled) continue;
+        if (!config.isEnabled) {
+          skipped.push({ providerId: adapter.providerId, reason: 'disabled' });
+          continue;
+        }
         // A provider pointed back at this gateway would recurse forever.
-        if (selfAddr && isSelfUrl(config.baseUrl, selfAddr.address, selfAddr.port)) continue;
+        if (selfAddr && isSelfUrl(config.baseUrl, selfAddr.address, selfAddr.port)) {
+          skipped.push({ providerId: adapter.providerId, reason: 'self_reference' });
+          continue;
+        }
         try {
           const providerModels = await adapter.listModels();
           for (const m of providerModels) {
@@ -207,8 +272,25 @@ export class GatewayServer {
             });
           }
         } catch {
-          // Skip unreachable providers
+          skipped.push({ providerId: adapter.providerId, reason: 'unreachable' });
         }
+      }
+
+      completeRequestAudit({
+        requestId,
+        status: 'success',
+        statusCode: 200,
+        providerId: 'gateway',
+        modelId: 'models.list',
+        durationMs: Date.now() - startedAt,
+      });
+      if (skipped.length > 0) {
+        recordAuditEvent({
+          requestId,
+          event: 'candidate.skipped',
+          reason: 'models_list_skipped',
+          detail: { skipped },
+        });
       }
 
       return { object: 'list', data: models };
@@ -262,10 +344,26 @@ export class GatewayServer {
       };
     }>('/v1/chat/completions', async (request, reply) => {
       const body = request.body;
-      const requestId = generateRequestId();
+      // Fastify already created this id in genReqId, so the auth hook, the audit
+      // row, the response body and the pino lines all speak about one request.
+      const requestId = String(request.id);
       const startTime = Date.now();
+      const routeUrl = request.routeOptions?.url ?? '/v1/chat/completions';
+
+      reply.header('X-Request-Id', requestId);
 
       if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+        auditRejectedRequest({
+          requestId,
+          route: routeUrl,
+          method: request.method,
+          requestedModel: body.model,
+          clientAddress: request.ip,
+          statusCode: 400,
+          errorCode: 'BAD_REQUEST',
+          errorMessage: 'messages field is required and must be a non-empty array',
+          params: { model: body.model, maxTokens: body.max_tokens },
+        });
         return reply.status(400).send({
           error: {
             message: 'messages field is required and must be a non-empty array',
@@ -275,6 +373,27 @@ export class GatewayServer {
         });
       }
 
+      const taskType = parseTaskType(body.task_type) ?? parseTaskType(readSetting('default_task_type'));
+      const stream = Boolean(body.stream);
+
+      beginRequestAudit({
+        requestId,
+        route: routeUrl,
+        method: request.method,
+        stream,
+        requestedModel: body.model,
+        taskType,
+        clientAddress: request.ip,
+        // Parameter fingerprint only — message content is never persisted.
+        params: {
+          messageCount: body.messages.length,
+          maxTokens: body.max_tokens,
+          temperature: body.temperature,
+          hasTools: Boolean(body.tools?.length),
+          responseFormat: body.response_format?.type,
+        },
+      });
+
       const gatewayRequest: GatewayRequest = {
         requestId,
         messages: body.messages.map((m) => ({
@@ -282,7 +401,7 @@ export class GatewayServer {
           content: m.content,
         })),
         model: body.model,
-        taskType: parseTaskType(body.task_type) ?? parseTaskType(readSetting('default_task_type')),
+        taskType,
         maxTokens: body.max_tokens,
         temperature: body.temperature,
         stream: body.stream,
@@ -290,21 +409,25 @@ export class GatewayServer {
         responseFormat: body.response_format,
       };
 
-      if (body.stream) {
-        return this.handleStreamRequest(reply, gatewayRequest, startTime);
+      const { trace, attemptCount } = createRequestTrace(requestId);
+
+      if (stream) {
+        return this.handleStreamRequest(reply, gatewayRequest, startTime, trace, attemptCount);
       }
 
-      return this.handleNonStreamRequest(reply, gatewayRequest, startTime);
+      return this.handleNonStreamRequest(reply, gatewayRequest, startTime, trace, attemptCount);
     });
   }
 
   private async handleNonStreamRequest(
     reply: import('fastify').FastifyReply,
     request: GatewayRequest,
-    startTime: number
+    startTime: number,
+    trace: SchedulerTrace,
+    attemptCount: () => number
   ) {
     try {
-      const result = await this.scheduler.execute(request);
+      const result = await this.scheduler.execute(request, { trace });
 
       recordCall({
         requestId: request.requestId,
@@ -315,6 +438,23 @@ export class GatewayServer {
         durationMs: result.durationMs,
         promptTokens: result.usage.promptTokens,
         completionTokens: result.usage.completionTokens,
+        totalTokens: result.usage.totalTokens,
+        statusCode: 200,
+        stream: false,
+        attempt: Math.max(1, attemptCount()),
+      });
+
+      completeRequestAudit({
+        requestId: request.requestId,
+        status: 'success',
+        statusCode: 200,
+        providerId: result.providerId,
+        modelId: result.model,
+        attempts: Math.max(1, attemptCount()),
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        totalTokens: result.usage.totalTokens,
+        durationMs: Date.now() - startTime,
       });
 
       const response = {
@@ -340,22 +480,40 @@ export class GatewayServer {
       return reply.send(response);
     } catch (err) {
       const desc = describeError(err);
+      const providerId = (extractProviderId(err) ?? 'unknown') as ProviderId;
+      const attempts = Math.max(1, attemptCount());
+      const message = redactSecrets(getSafeErrorMessage(err));
       recordCall({
         requestId: request.requestId,
-        providerId: (extractProviderId(err) ?? 'unknown') as ProviderId,
+        providerId,
         modelId: request.model ?? 'unknown',
         taskType: request.taskType,
         status: desc.code === 'RATE_LIMITED' ? 'rate_limited' : 'error',
         durationMs: Date.now() - startTime,
         promptTokens: 0,
         completionTokens: 0,
-        errorMessage: redactSecrets(getSafeErrorMessage(err)),
+        errorMessage: message,
+        statusCode: desc.status,
+        stream: false,
+        attempt: attempts,
+      });
+
+      completeRequestAudit({
+        requestId: request.requestId,
+        status: auditStatusForError(desc),
+        statusCode: desc.status,
+        providerId,
+        modelId: request.model ?? 'unknown',
+        attempts,
+        durationMs: Date.now() - startTime,
+        errorCode: desc.code,
+        errorMessage: message,
       });
 
       if (desc.retryAfterSeconds) reply.header('Retry-After', String(desc.retryAfterSeconds));
       return reply.status(desc.status).send({
         error: {
-          message: redactSecrets(getSafeErrorMessage(err)),
+          message,
           type: desc.type,
           code: desc.code,
         },
@@ -366,7 +524,9 @@ export class GatewayServer {
   private handleStreamRequest(
     reply: import('fastify').FastifyReply,
     request: GatewayRequest,
-    startTime: number
+    startTime: number,
+    trace: SchedulerTrace,
+    attemptCount: () => number
   ) {
     reply.hijack();
     const raw = reply.raw;
@@ -375,9 +535,17 @@ export class GatewayServer {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      'X-Request-Id': request.requestId,
     });
 
-    const stream = this.scheduler.executeStream(request);
+    recordAuditEvent({
+      requestId: request.requestId,
+      event: 'response.head',
+      statusCode: 200,
+      detail: { stream: true },
+    });
+
+    const stream = this.scheduler.executeStream(request, { trace });
     let clientGone = false;
     let closed = false;
 
@@ -408,10 +576,14 @@ export class GatewayServer {
       let modelId = request.model ?? 'unknown';
       let finishReason = 'stop';
       let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      let chunkCount = 0;
+      let firstTokenMs: number | null = null;
 
       try {
         for await (const chunk of stream) {
           if (clientGone) break;
+          if (firstTokenMs === null) firstTokenMs = Date.now() - startTime;
+          chunkCount += 1;
           providerId = chunk.providerId ?? providerId;
           modelId = chunk.model ?? modelId;
           if (chunk.finishReason) finishReason = chunk.finishReason;
@@ -433,6 +605,16 @@ export class GatewayServer {
           });
 
           await write(`data: ${sseData}\n\n`);
+        }
+
+        if (clientGone) {
+          recordAuditEvent({
+            requestId: request.requestId,
+            event: 'client.disconnected',
+            providerId,
+            modelId,
+            detail: { chunksWritten: chunkCount },
+          });
         }
 
         if (!clientGone) {
@@ -460,11 +642,33 @@ export class GatewayServer {
           durationMs: Date.now() - startTime,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          errorMessage: clientGone ? 'Client disconnected before completion' : undefined,
+          statusCode: 200,
+          stream: true,
+          attempt: Math.max(1, attemptCount()),
+        });
+
+        completeRequestAudit({
+          requestId: request.requestId,
+          status: clientGone ? 'aborted' : 'success',
+          statusCode: 200,
+          providerId,
+          modelId,
+          attempts: Math.max(1, attemptCount()),
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          durationMs: Date.now() - startTime,
+          timeToFirstTokenMs: firstTokenMs ?? undefined,
+          errorCode: clientGone ? 'CLIENT_DISCONNECTED' : undefined,
           errorMessage: clientGone ? 'Client disconnected before completion' : undefined,
         });
       } catch (err) {
         const desc = describeError(err);
         if (providerId === 'unknown') providerId = (extractProviderId(err) ?? 'unknown') as ProviderId;
+        const attempts = Math.max(1, attemptCount());
+        const message = redactSecrets(getSafeErrorMessage(err));
         recordCall({
           requestId: request.requestId,
           providerId,
@@ -474,13 +678,35 @@ export class GatewayServer {
           durationMs: Date.now() - startTime,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
-          errorMessage: redactSecrets(getSafeErrorMessage(err)),
+          totalTokens: usage.totalTokens,
+          errorMessage: message,
+          // The SSE head was already sent, so the client-visible HTTP status stays
+          // 200 while the audit row records the real upstream outcome.
+          statusCode: desc.status,
+          stream: true,
+          attempt: attempts,
+        });
+
+        completeRequestAudit({
+          requestId: request.requestId,
+          status: auditStatusForError(desc),
+          statusCode: desc.status,
+          providerId,
+          modelId,
+          attempts,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          durationMs: Date.now() - startTime,
+          timeToFirstTokenMs: firstTokenMs ?? undefined,
+          errorCode: desc.code,
+          errorMessage: message,
         });
 
         if (!clientGone) {
           const errorData = JSON.stringify({
             error: {
-              message: redactSecrets(getSafeErrorMessage(err)),
+              message,
               type: desc.type,
               code: desc.code,
             },
@@ -495,6 +721,67 @@ export class GatewayServer {
 
     return reply;
   }
+}
+
+/**
+ * Bridge the scheduler's routing decisions into the audit trail and keep the
+ * attempt counter the gateway needs for "this request fell back twice before
+ * succeeding".
+ */
+function createRequestTrace(requestId: string): { trace: SchedulerTrace; attemptCount: () => number } {
+  let attempts = 0;
+
+  const trace: SchedulerTrace = {
+    emit: (event: TraceEvent) => {
+      if (event.stage === 'attempt.start') attempts += 1;
+      recordAuditEvent({
+        requestId,
+        event: mapStageToAuditEvent(event.stage),
+        providerId: event.providerId,
+        modelId: event.modelId,
+        attempt: event.attempt,
+        reason: event.reason,
+        durationMs: event.durationMs,
+        statusCode: event.statusCode,
+        detail: event.detail ?? (event.score === undefined ? undefined : { score: event.score }),
+      });
+    },
+  };
+
+  return { trace, attemptCount: () => attempts };
+}
+
+function mapStageToAuditEvent(stage: TraceEvent['stage']): AuditEventType {
+  switch (stage) {
+    case 'candidate.skipped':
+      return 'candidate.skipped';
+    case 'candidate.selected':
+      return 'candidate.selected';
+    case 'attempt.start':
+      return 'attempt.start';
+    case 'attempt.success':
+      return 'attempt.success';
+    case 'attempt.failed':
+      return 'attempt.failed';
+    case 'stream.started':
+      return 'dispatch.start';
+    case 'stream.first_token':
+      return 'stream.first_token';
+    case 'stream.failed':
+      return 'stream.failed';
+    case 'credential.rotated':
+      return 'credential.rotated';
+    default:
+      return 'request.received';
+  }
+}
+
+/** Map an HTTP error description onto the audit status vocabulary. */
+function auditStatusForError(desc: ErrorDescription): AuditStatus {
+  if (desc.code === 'RATE_LIMITED') return 'rate_limited';
+  if (desc.code === 'QUOTA_EXCEEDED') return 'quota_exceeded';
+  if (desc.code === 'TIMEOUT') return 'timeout';
+  return 'error';
 }
 
 function resolveGatewayLogFile(): string {

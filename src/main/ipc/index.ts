@@ -6,6 +6,8 @@ import { registerModelsIpc } from './models.ipc.js';
 import { registerSchedulerIpc } from './scheduler.ipc.js';
 import { registerSettingsIpc } from './settings.ipc.js';
 import { registerUsageIpc } from './usage.ipc.js';
+import { registerProfileIpc } from './profiles.ipc.js';
+import { registerOAuthIpc } from './oauth.ipc.js';
 import { registerAppIpc } from './app.ipc.js';
 
 export function registerAllIpcHandlers(
@@ -19,5 +21,7 @@ export function registerAllIpcHandlers(
   registerSchedulerIpc(scheduler);
   registerSettingsIpc();
   registerUsageIpc();
+  registerProfileIpc(scheduler);
+  registerOAuthIpc();
   registerAppIpc();
 }

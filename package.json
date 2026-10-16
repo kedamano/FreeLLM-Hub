@@ -13,14 +13,19 @@
     "build": "node scripts/build.mjs",
     "build:vite": "vite build",
     "build:electron": "tsc -p tsconfig.main.json",
-    "package": "node scripts/package-windows.mjs",
+    "package": "node scripts/package.mjs",
+    "package:win": "node scripts/package.mjs --win --x64",
+    "package:mac": "node scripts/package.mjs --mac",
+    "package:linux": "node scripts/package.mjs --linux",
+    "package:all": "node scripts/package.mjs --all",
+    "package:dir": "node scripts/package.mjs --dir",
     "gen:icons": "node scripts/gen-icons.mjs",
+    "rebuild:electron": "node scripts/rebuild-native.mjs electron",
+    "rebuild:node": "node scripts/rebuild-native.mjs node",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "lint": "eslint src/ scripts/",
-    "rebuild:electron": "node scripts/rebuild-native.mjs electron",
-    "rebuild:node": "node scripts/rebuild-native.mjs node",
     "format": "prettier --write \"src/**/*.{ts,tsx,json,css}\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.renderer.json"
   },
@@ -32,7 +37,8 @@
     "pino-pretty": "^13.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0"
+    "react-router-dom": "^6.28.0",
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.16.0",

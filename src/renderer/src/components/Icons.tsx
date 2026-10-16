@@ -177,3 +177,21 @@ export function TerminalIcon({ className, size }: IconProps) {
     </svg>
   );
 }
+
+export function AuditIcon({ className, size }: IconProps) {
+  return (
+    <svg {...baseProps(size)} className={className}>
+      <path d="M3 12h4l2.5 6 4-13 2.5 7h4.5" />
+    </svg>
+  );
+}
+
+export function ProfileIcon({ className, size }: IconProps) {
+  return (
+    <svg {...baseProps(size)} className={className}>
+      <path d="M4 7h7M4 12h7M4 17h7" />
+      <circle cx="17.5" cy="7" r="2" />
+      <circle cx="17.5" cy="17" r="2" />
+    </svg>
+  );
+}

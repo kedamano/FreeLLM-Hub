@@ -32,12 +32,25 @@ import {
   PROVIDER_ENABLED_PREFIX,
   type PlainKeyStore,
 } from './provider-state.js';
-import { deleteSetting, readSetting, writeSetting } from '../settings/settings-store.js';
+import { resolveOAuthSpec } from './oauth/oauth-manager.js';
+import type { OAuthTokenSource } from './openai-compatible/adapter.js';
+import {
+  deleteProfileSetting,
+  readProfileSetting,
+  writeProfileSetting,
+} from '../settings/profile-store.js';
 
+/**
+ * Provider pool configuration is scoped to the active configuration profile, so
+ * "which providers are enabled / which base URL / which quota" can differ per project
+ * while credentials and UI preferences stay global. For the `default` profile the
+ * namespace collapses onto the historical bare keys, which keeps existing databases
+ * reading exactly the same rows they always did.
+ */
 export const settingsBackedStore: PlainKeyStore = {
-  get: readSetting,
-  set: writeSetting,
-  delete: deleteSetting,
+  get: (key) => readProfileSetting(key),
+  set: (key, value) => writeProfileSetting(key, value),
+  delete: (key) => deleteProfileSetting(key),
 };
 
 interface ReadCredentialStore {
@@ -108,6 +121,45 @@ const BUILT_IN_FACTORIES: Record<string, BuiltInFactory> = {
 export interface RegisterAllProvidersOptions {
   settings?: PlainKeyStore;
   secrets?: SecretKeyStore;
+  /**
+   * Host-provided OAuth token source factory. Whether a provider is OAuth is data (its
+   * settings row), but adapters are built by factory code, so the host injects the
+   * capability and bootstrap decides which adapters get it.
+   */
+  tokenSourceFor?: (providerId: string) => OAuthTokenSource;
+}
+
+interface TokenSourceCapable {
+  setTokenSource?: (source: OAuthTokenSource | undefined) => void;
+}
+
+/**
+ * Wire OAuth token sources onto every adapter whose provider settings describe an OAuth
+ * endpoint. Must run after `applyProviderOverrides`, because that is what loads the
+ * per-profile `provider-settings:<id>` rows the decision is based on.
+ */
+export function attachOAuthTokenSources(
+  adapters: ProviderAdapter[],
+  secrets: { retrieve(id: string): string | null },
+  tokenSourceFor?: (providerId: string) => OAuthTokenSource
+): string[] {
+  if (!tokenSourceFor) return [];
+  const attached: string[] = [];
+
+  for (const adapter of adapters) {
+    const capable = adapter as unknown as TokenSourceCapable;
+    if (typeof capable.setTokenSource !== 'function') continue;
+    const config = adapter.getProviderConfig();
+    const spec = resolveOAuthSpec(config.id, config.displayName, config.baseUrl, secrets);
+    if (!spec) {
+      capable.setTokenSource(undefined);
+      continue;
+    }
+    capable.setTokenSource(tokenSourceFor(config.id));
+    attached.push(config.id);
+  }
+
+  return attached;
 }
 
 export function registerAllProviders(
@@ -165,6 +217,11 @@ export function registerAllProviders(
   const { errors } = applyProviderOverrides(adapters, settings);
   for (const error of errors) console.warn(`[Bootstrap] ${error}`);
 
+  const oauthProviders = attachOAuthTokenSources(registry.getAll(), secrets, options.tokenSourceFor);
+  if (oauthProviders.length > 0) {
+    console.log(`[Bootstrap] OAuth 服务商: ${oauthProviders.join(', ')}`);
+  }
+
   console.log(`[Providers] Registered ${registry.getAll().length} providers`);
 }
 
@@ -211,11 +268,11 @@ function registerCustomProvidersFromDb(
 }
 
 export function applyPersistedProviderEnabledFromSettings(
-  readSetting: (key: string) => string | null,
+  read: (key: string) => string | null = readProfileSetting,
   registry: ProviderRegistry = getProviderRegistry()
 ): void {
   for (const adapter of registry.getAll()) {
-    const stored = readSetting(`${ENABLED_KEY_PREFIX}${adapter.providerId}`);
+    const stored = read(`${ENABLED_KEY_PREFIX}${adapter.providerId}`);
     if (stored === null) continue;
     applyEnabled(adapter, stored !== 'false');
   }

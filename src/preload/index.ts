@@ -31,9 +31,25 @@ const api = {
       invoke('providers:set-quota', providerId, quota),
     discoverModels: (providerId: string) => invoke('providers:discover-models', providerId),
     getModels: (providerId: string) => invoke('providers:get-models', providerId),
-    createCustom: (input: { name: string; baseUrl: string; apiKey?: string }) =>
-      invoke('providers:create-custom', input),
+    createCustom: (input: {
+      name: string;
+      baseUrl: string;
+      apiKey?: string;
+      authType?: 'api-key' | 'oauth';
+      oauth?: Record<string, unknown>;
+    }) => invoke('providers:create-custom', input),
     deleteCustom: (providerId: string) => invoke('providers:delete-custom', providerId),
+    configureOAuth: (
+      providerId: string,
+      input: {
+        authorizationUrl: string;
+        tokenUrl: string;
+        clientId: string;
+        clientSecret?: string;
+        scopes?: string;
+        usePkce?: boolean;
+      }
+    ) => invoke('providers:configure-oauth', providerId, input),
   },
 
   models: {
@@ -56,10 +72,41 @@ const api = {
   },
 
   usage: {
-    dashboard: () => invoke('usage:dashboard'),
-    providerStats: (providerId: string) => invoke('usage:provider-stats', providerId),
-    dailyStats: (days?: number) => invoke('usage:daily-stats', days),
+    dashboard: (profileId?: string) => invoke('usage:dashboard', profileId),
+    providerStats: (providerId: string, profileId?: string) =>
+      invoke('usage:provider-stats', providerId, profileId),
+    dailyStats: (days?: number, profileId?: string) => invoke('usage:daily-stats', days, profileId),
     recentCalls: (limit?: number) => invoke('usage:recent-calls', limit),
+    costSummary: (days?: number, profileId?: string) =>
+      invoke('usage:cost-summary', days, profileId),
+    quotaUsage: (profileId?: string) => invoke('usage:quota-usage', profileId),
+    dailyByProvider: (days?: number, profileId?: string) =>
+      invoke('usage:daily-by-provider', days, profileId),
+    auditList: (query?: Record<string, unknown>) => invoke('usage:audit-list', query),
+    auditDetail: (requestId: string) => invoke('usage:audit-detail', requestId),
+    auditSummary: (days?: number, profileId?: string) => invoke('usage:audit-summary', days, profileId),
+  },
+
+  profiles: {
+    list: () => invoke('profiles:list'),
+    active: () => invoke('profiles:active'),
+    get: (profileId: string) => invoke('profiles:get', profileId),
+    create: (input: { name: string; description?: string; copyFrom?: string }) =>
+      invoke('profiles:create', input),
+    update: (profileId: string, patch: { name?: string; description?: string }) =>
+      invoke('profiles:update', profileId, patch),
+    remove: (profileId: string) => invoke('profiles:delete', profileId),
+    switch: (profileId: string) => invoke('profiles:switch', profileId),
+    duplicate: (from: string, to: string) => invoke('profiles:duplicate', from, to),
+    resetPool: (profileId: string) => invoke('profiles:reset-pool', profileId),
+  },
+
+  oauth: {
+    start: (providerId: string) => invoke('oauth:start', providerId),
+    status: (state: string) => invoke('oauth:status', state),
+    cancel: (state: string) => invoke('oauth:cancel', state),
+    refresh: (providerId: string) => invoke('oauth:refresh', providerId),
+    unlink: (providerId: string) => invoke('oauth:unlink', providerId),
   },
 
   gateway: {

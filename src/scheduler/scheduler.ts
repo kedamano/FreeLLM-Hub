@@ -15,10 +15,12 @@ import { RetryPolicy } from './retry-policy.js';
 import { QuotaManager, type QuotaConfig } from './quota-manager.js';
 import { getTaskRoute } from './task-router.js';
 import { isRetriable, getErrorCode } from './fallback.js';
+import { traceEvent, type SchedulerTrace } from './trace.js';
 import { getProviderRegistry } from '../core/providers/registry.js';
 import type { ChatOptions } from '../core/providers/contracts.js';
 import { AllProvidersFailedError, QuotaExceededError, RateLimitError, ModelNotFoundError } from '../shared/errors/index.js';
 import { estimateTokens, estimateMessagesTokens } from '../usage/tokenizer.js';
+import { computeModelCost, quoteCallCost } from '../usage/cost-model.js';
 
 const MODEL_CATALOG_TTL_MS = 60000;
 const PROVIDER_HEALTH_TTL_MS = 10000;
@@ -26,12 +28,15 @@ const PROVIDER_HEALTH_TTL_MS = 10000;
 export interface SchedulerOptions {
   maxRetries?: number;
   timeoutMs?: number;
+  /** Optional audit sink for routing decisions and retry attempts. */
+  trace?: SchedulerTrace;
 }
 
 export interface SelectModelOptions {
   excludeProviders?: ProviderId[];
   excludeModels?: string[];
   estimatedTokens?: number;
+  trace?: SchedulerTrace;
 }
 
 interface ModelCatalogEntry {
@@ -122,22 +127,50 @@ export class Scheduler {
     const registry = getProviderRegistry();
     const throttled: Array<{ providerId: ProviderId; retryAfterMs: number }> = [];
     const quotaBlocked: ProviderId[] = [];
+    const trace = options?.trace;
     let considered = 0;
 
     for (const { model, score } of ranked) {
       const providerId = model.providerId;
 
       const adapter = registry.get(providerId);
-      if (!adapter) continue;
+      if (!adapter) {
+        traceEvent(trace, {
+          stage: 'candidate.skipped',
+          providerId,
+          modelId: model.id,
+          reason: 'no_adapter',
+          score,
+        });
+        continue;
+      }
 
       const liveConfig = adapter.getProviderConfig();
       const registeredConfig = this.providerConfigs.get(providerId);
       const config = registeredConfig
         ? { ...liveConfig, isEnabled: registeredConfig.isEnabled }
         : liveConfig;
-      if (!config.isEnabled) continue;
+      if (!config.isEnabled) {
+        traceEvent(trace, {
+          stage: 'candidate.skipped',
+          providerId,
+          modelId: model.id,
+          reason: 'disabled',
+          score,
+        });
+        continue;
+      }
 
-      if (!this.circuitBreaker.canExecute(providerId)) continue;
+      if (!this.circuitBreaker.canExecute(providerId)) {
+        traceEvent(trace, {
+          stage: 'candidate.skipped',
+          providerId,
+          modelId: model.id,
+          reason: 'circuit_open',
+          score,
+        });
+        continue;
+      }
 
       considered++;
 
@@ -145,16 +178,40 @@ export class Scheduler {
       // Ranking must not consume window quota: probing every candidate would
       // charge requests that were never dispatched and hide real capacity.
       if (!this.rateLimiter.check(rateLimitKey, estimatedTokens, model.rateLimits)) {
-        throttled.push({ providerId, retryAfterMs: this.rateLimiter.getRetryAfter(rateLimitKey) });
+        const retryAfterMs = this.rateLimiter.getRetryAfter(rateLimitKey);
+        throttled.push({ providerId, retryAfterMs });
         this.circuitBreaker.release(providerId);
+        traceEvent(trace, {
+          stage: 'candidate.skipped',
+          providerId,
+          modelId: model.id,
+          reason: 'rate_limited',
+          score,
+          detail: { retryAfterMs },
+        });
         continue;
       }
 
       if (!this.quotaManager.canProceed(providerId, model.id, estimatedTokens)) {
         quotaBlocked.push(providerId);
         this.circuitBreaker.release(providerId);
+        traceEvent(trace, {
+          stage: 'candidate.skipped',
+          providerId,
+          modelId: model.id,
+          reason: 'quota_exceeded',
+          score,
+        });
         continue;
       }
+
+      traceEvent(trace, {
+        stage: 'candidate.selected',
+        providerId,
+        modelId: model.id,
+        score,
+        reason: `Selected for task '${taskType}'`,
+      });
 
       return {
         model,
@@ -164,6 +221,14 @@ export class Scheduler {
         score,
         estimatedCost: this.estimateCost(model, request),
       };
+    }
+
+    if (candidates.length > 0 && considered === 0) {
+      traceEvent(trace, {
+        stage: 'candidate.skipped',
+        reason: 'no_candidates',
+        detail: { ranked: ranked.length },
+      });
     }
 
     // Every candidate that was healthy enough to be considered is rate limited:
@@ -192,6 +257,7 @@ export class Scheduler {
   }> {
     const startTime = Date.now();
     const maxRetries = options?.maxRetries ?? this.retryPolicy.getMaxRetries();
+    const trace = options?.trace;
     const registry = getProviderRegistry();
     const availableModels = await this.collectModels(registry);
     const estimatedTokens = this.estimateRequestTokens(request);
@@ -206,6 +272,7 @@ export class Scheduler {
         excludeProviders: attemptedProviders,
         excludeModels: attemptedModels,
         estimatedTokens,
+        trace,
       });
 
       if (!decision) {
@@ -228,6 +295,13 @@ export class Scheduler {
       const rateLimitKey = `${decision.providerId}:${decision.model.id}`;
       if (!this.rateLimiter.acquire(rateLimitKey, estimatedTokens, decision.model.rateLimits)) {
         this.circuitBreaker.release(decision.providerId);
+        traceEvent(trace, {
+          stage: 'candidate.skipped',
+          providerId: decision.providerId,
+          modelId: decision.model.id,
+          attempt,
+          reason: 'rate_limit_slot_taken',
+        });
         continue;
       }
 
@@ -239,6 +313,14 @@ export class Scheduler {
         responseFormat: request.responseFormat,
       };
 
+      const attemptStart = Date.now();
+      traceEvent(trace, {
+        stage: 'attempt.start',
+        providerId: decision.providerId,
+        modelId: decision.model.id,
+        attempt,
+      });
+
       try {
         const result = await adapter.chat(request.messages, decision.model.id, chatOptions);
 
@@ -247,7 +329,25 @@ export class Scheduler {
           `${decision.providerId}:${decision.model.id}`,
           result.usage.totalTokens - estimatedTokens
         );
-        this.quotaManager.record(decision.providerId, 1, result.usage.totalTokens, decision.model.id);
+        this.quotaManager.record(
+          decision.providerId,
+          1,
+          result.usage.totalTokens,
+          decision.model.id,
+          quoteCallCost(decision.providerId, decision.model.id, {
+            promptTokens: result.usage.promptTokens,
+            completionTokens: result.usage.completionTokens,
+          }).costUsd
+        );
+
+        traceEvent(trace, {
+          stage: 'attempt.success',
+          providerId: decision.providerId,
+          modelId: decision.model.id,
+          attempt,
+          durationMs: Date.now() - attemptStart,
+          detail: { usage: result.usage },
+        });
 
         return {
           ...result,
@@ -265,6 +365,20 @@ export class Scheduler {
           error: lastError.message,
         });
         this.circuitBreaker.recordFailure(decision.providerId);
+
+        traceEvent(trace, {
+          stage: 'attempt.failed',
+          providerId: decision.providerId,
+          modelId: decision.model.id,
+          attempt,
+          durationMs: Date.now() - attemptStart,
+          reason: getErrorCode(err) ?? 'UNKNOWN',
+          message: lastError.message,
+          detail: {
+            retriable: isRetriable(err),
+            willRetry: isRetriable(err) && this.retryPolicy.shouldRetry(attempt, getErrorCode(err)),
+          },
+        });
 
         // A single hot (rate-limited) model must not blacklist its whole
         // provider — only that model is excluded. Other failures take the
@@ -303,6 +417,7 @@ export class Scheduler {
     providerId: ProviderId;
   }> {
     const maxRetries = options?.maxRetries ?? this.retryPolicy.getMaxRetries();
+    const trace = options?.trace;
     const registry = getProviderRegistry();
     const availableModels = await this.collectModels(registry);
     const estimatedTokens = this.estimateRequestTokens(request);
@@ -316,6 +431,7 @@ export class Scheduler {
         estimatedTokens,
         excludeProviders: attemptedProviders,
         excludeModels: attemptedModels,
+        trace,
       });
 
       if (!decision) {
@@ -346,12 +462,28 @@ export class Scheduler {
       const rateLimitKey = `${decision.providerId}:${decision.model.id}`;
       if (!this.rateLimiter.acquire(rateLimitKey, estimatedTokens, decision.model.rateLimits)) {
         this.circuitBreaker.release(decision.providerId);
+        traceEvent(trace, {
+          stage: 'candidate.skipped',
+          providerId: decision.providerId,
+          modelId: decision.model.id,
+          attempt,
+          reason: 'rate_limit_slot_taken',
+        });
         continue;
       }
 
       let fullContent = '';
       let upstreamUsage: GatewayUsage | null = null;
       let yieldedAny = false;
+      const attemptStart = Date.now();
+
+      traceEvent(trace, {
+        stage: 'attempt.start',
+        providerId: decision.providerId,
+        modelId: decision.model.id,
+        attempt,
+      });
+      traceEvent(trace, { stage: 'stream.started', providerId: decision.providerId, modelId: decision.model.id, attempt });
 
       try {
         for await (const chunk of adapter.chatStream(request.messages, decision.model.id, chatOptions)) {
@@ -360,6 +492,15 @@ export class Scheduler {
           }
           if (chunk.usage) {
             upstreamUsage = chunk.usage;
+          }
+          if (!yieldedAny) {
+            traceEvent(trace, {
+              stage: 'stream.first_token',
+              providerId: decision.providerId,
+              modelId: decision.model.id,
+              attempt,
+              durationMs: Date.now() - attemptStart,
+            });
           }
           yieldedAny = true;
           yield {
@@ -373,6 +514,17 @@ export class Scheduler {
       } catch (err) {
         this.circuitBreaker.recordFailure(decision.providerId);
         lastError = err instanceof Error ? err : new Error(String(err));
+
+        traceEvent(trace, {
+          stage: 'stream.failed',
+          providerId: decision.providerId,
+          modelId: decision.model.id,
+          attempt,
+          durationMs: Date.now() - attemptStart,
+          reason: getErrorCode(err) ?? 'UNKNOWN',
+          message: lastError.message,
+          detail: { yieldedAny },
+        });
 
         // Once bytes have reached the client we cannot restart the stream,
         // so fall back to another model only if the failure was immediate.
@@ -404,7 +556,25 @@ export class Scheduler {
         `${decision.providerId}:${decision.model.id}`,
         totalTokens - estimatedTokens
       );
-      this.quotaManager.record(decision.providerId, 1, totalTokens, decision.model.id);
+      this.quotaManager.record(
+        decision.providerId,
+        1,
+        totalTokens,
+        decision.model.id,
+        quoteCallCost(decision.providerId, decision.model.id, {
+          promptTokens,
+          completionTokens,
+        }).costUsd
+      );
+
+      traceEvent(trace, {
+        stage: 'attempt.success',
+        providerId: decision.providerId,
+        modelId: decision.model.id,
+        attempt,
+        durationMs: Date.now() - attemptStart,
+        detail: { usage },
+      });
 
       yield { usage, model: decision.model.id, providerId: decision.providerId };
       return;
@@ -500,8 +670,15 @@ export class Scheduler {
     }
   }
 
-  private estimateCost(model: ProviderModel, _request: GatewayRequest): number {
-    if (model.pricing.type === 'local' || model.pricing.type === 'free') return 0;
-    return 0.001;
+  /**
+   * Projected USD cost of the request against the candidate model's pricing, used
+   * for scoring and for the "why this model" audit entry. Free and local models are
+   * genuinely 0; unknown pricing no longer pretends to cost a fraction of a cent.
+   */
+  private estimateCost(model: ProviderModel, request: GatewayRequest): number {
+    const promptTokens = estimateMessagesTokens(request.messages);
+    const completionTokens =
+      request.maxTokens ?? model.capabilities.maxOutputTokens ?? 0;
+    return computeModelCost(model.pricing, { promptTokens, completionTokens }).costUsd;
   }
 }

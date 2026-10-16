@@ -1,4 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
+import type {
+  AuditDetailResult,
+  AuditListResult,
+  AuditQuery,
+  AuditSummary,
+  CostSummary,
+  OAuthCredentialState,
+  OAuthFlowState,
+  ProfileActionResult,
+  ProfileView,
+  ProviderDailyPoint,
+  ProviderQuotaUsage,
+} from '../../../shared/types/observability.js';
 
 export interface UseIPCReturn<T> {
   data: T | null;
@@ -12,6 +25,15 @@ type IPCCall<T> = () => Promise<T>;
 export type FreeLLMApi = Window['freellm'];
 
 const API_BASE = '/api';
+
+/** Build a query string, skipping absent values. */
+function qs(values: Record<string, string | number | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  return params.toString();
+}
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -92,10 +114,21 @@ function createHttpApi(): FreeLLMApi {
         ),
       getModels: (providerId: string) =>
         http<unknown[]>(`/providers/${seg(providerId)}/models`),
-      createCustom: (input: { name: string; baseUrl: string; apiKey?: string }) =>
+      createCustom: (input: {
+        name: string;
+        baseUrl: string;
+        apiKey?: string;
+        authType?: 'api-key' | 'oauth';
+        oauth?: Record<string, unknown>;
+      }) =>
         postJson<{ success: boolean; providerId?: string; error?: string }>('/providers/custom', input),
       deleteCustom: (providerId: string) =>
         http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}`, { method: 'DELETE' }),
+      configureOAuth: (providerId: string, input: Record<string, unknown>) =>
+        postJson<{ success: boolean; error?: string; config?: unknown }>(
+          `/providers/${seg(providerId)}/oauth`,
+          input
+        ),
     },
     models: {
       list: () => http<unknown[]>('/models'),
@@ -117,12 +150,73 @@ function createHttpApi(): FreeLLMApi {
       getAll: () => http<Record<string, string>>('/settings'),
     },
     usage: {
-      dashboard: () => http<unknown>('/usage/summary'),
-      providerStats: (providerId: string) => http<unknown>(`/usage/providers/${seg(providerId)}`),
-      dailyStats: (days?: number) =>
-        http<unknown>(`/usage/timeseries${days !== undefined ? `?days=${days}` : ''}`),
+      dashboard: (profileId?: string) =>
+        http<unknown>(`/usage/summary${profileId ? `?profileId=${seg(profileId)}` : ''}`),
+      providerStats: (providerId: string, profileId?: string) =>
+        http<unknown>(
+          `/usage/providers/${seg(providerId)}${profileId ? `?profileId=${seg(profileId)}` : ''}`
+        ),
+      dailyStats: (days?: number, profileId?: string) =>
+        http<unknown>(
+          `/usage/timeseries?${qs({ days, profileId })}`
+        ),
       recentCalls: (limit?: number) =>
         http<unknown[]>(`/usage/recent${limit !== undefined ? `?limit=${limit}` : ''}`),
+      costSummary: (days?: number, profileId?: string) =>
+        http<CostSummary>(`/usage/cost?${qs({ days, profileId })}`),
+      quotaUsage: (profileId?: string) =>
+        http<ProviderQuotaUsage[]>(`/usage/quota?${qs({ profileId })}`),
+      dailyByProvider: (days?: number, profileId?: string) =>
+        http<ProviderDailyPoint[]>(`/usage/timeseries-by-provider?${qs({ days, profileId })}`),
+      auditList: (query?: AuditQuery) => http<AuditListResult>('/audit/requests', {
+        method: 'POST',
+        body: JSON.stringify(query ?? {}),
+      }),
+      auditDetail: (requestId: string) =>
+        http<AuditDetailResult | null>(`/audit/requests/${seg(requestId)}`),
+      auditSummary: (days?: number, profileId?: string) =>
+        http<AuditSummary>(`/audit/summary?${qs({ days, profileId })}`),
+    },
+    profiles: {
+      list: () => http<ProfileView[]>('/profiles'),
+      active: () => http<ProfileView>('/profiles/active'),
+      get: (profileId: string) => http<ProfileView | null>(`/profiles/${seg(profileId)}`),
+      create: (input: { name: string; description?: string; copyFrom?: string }) =>
+        postJson<ProfileActionResult>('/profiles', input),
+      update: (profileId: string, patch: { name?: string; description?: string }) =>
+        http<ProfileActionResult>(`/profiles/${seg(profileId)}`, {
+          method: 'PUT',
+          body: JSON.stringify(patch),
+        }),
+      remove: (profileId: string) =>
+        http<{ ok: boolean; error?: string }>(`/profiles/${seg(profileId)}`, { method: 'DELETE' }),
+      switch: (profileId: string) =>
+        postJson<ProfileActionResult>(`/profiles/${seg(profileId)}/activate`),
+      duplicate: (from: string, to: string) =>
+        postJson<{ ok: boolean; copied?: number; error?: string }>('/profiles/duplicate', {
+          from,
+          to,
+        }),
+      resetPool: (profileId: string) =>
+        postJson<{ ok: boolean; cleared?: number }>(`/profiles/${seg(profileId)}/reset-pool`),
+    },
+    oauth: {
+      start: (providerId: string) =>
+        postJson<{ ok: boolean; flow?: OAuthFlowState; error?: string }>(
+          `/oauth/${seg(providerId)}/authorize`
+        ),
+      status: (state: string) =>
+        http<{ flow: OAuthFlowState | null; credential: OAuthCredentialState | null }>(
+          `/oauth/flows/${seg(state)}`
+        ),
+      cancel: (state: string) =>
+        postJson<{ ok: boolean; error?: string }>(`/oauth/flows/${seg(state)}/cancel`),
+      refresh: (providerId: string) =>
+        postJson<{ ok: boolean; credential?: OAuthCredentialState; error?: string }>(
+          `/oauth/${seg(providerId)}/refresh`
+        ),
+      unlink: (providerId: string) =>
+        http<{ ok: boolean; error?: string }>(`/oauth/${seg(providerId)}`, { method: 'DELETE' }),
     },
     gateway: {
       status: () => http<unknown>('/gateway/status'),

@@ -109,6 +109,51 @@ class NodeAesGcmEncryptor implements Encryptor {
   }
 }
 
+export type CredentialKind =
+  | 'api-key'
+  | 'oauth'
+  | 'oauth-client-secret'
+  | 'bootstrap-token'
+  | 'gateway-token';
+
+export type CredentialLifecycleStatus =
+  | 'active'
+  | 'expired'
+  | 'revoked'
+  | 'refreshing'
+  | 'error';
+
+/**
+ * Non-secret attributes about a stored secret. OAuth access tokens need these: the
+ * UI has to show "expires in 42 minutes" and the refresher needs to know whether a
+ * refresh token even exists, without decrypting the token on every read.
+ */
+export interface CredentialMetadata {
+  kind?: CredentialKind;
+  providerId?: string;
+  tokenType?: string;
+  scope?: string;
+  /** ISO timestamp; only meaningful for `oauth`. */
+  expiresAt?: string | null;
+  refreshable?: boolean;
+  status?: CredentialLifecycleStatus;
+  lastRefreshedAt?: string | null;
+  label?: string | null;
+}
+
+/** Raw `credentials` row shape, before the camelCase mapping. */
+interface CredentialMetaRow {
+  kind: string | null;
+  provider_id: string | null;
+  token_type: string | null;
+  scope: string | null;
+  expires_at: string | null;
+  refreshable: number | null;
+  status: string | null;
+  last_refreshed_at: string | null;
+  label: string | null;
+}
+
 export class CredentialStore {
   constructor(private encryptor: Encryptor) {
     const db = getDatabase();
@@ -116,16 +161,85 @@ export class CredentialStore {
   }
 
   store(id: string, value: string): void {
+    this.storeWithMetadata(id, value, {});
+  }
+
+  /**
+   * Persist a secret together with its metadata. The metadata columns were added by
+   * migration v6, so every write also has to work against a database that has not
+   * been migrated yet (older builds) — the fallback insert keeps that path alive.
+   */
+  storeWithMetadata(id: string, value: string, meta: CredentialMetadata): void {
     if (!this.encryptor.available()) {
       throw new Error('Secure storage is not available on this system');
     }
 
     const db = getDatabase();
     const encrypted = this.encryptor.encrypt(value);
-    const stmt = db.prepare(
-      `INSERT OR REPLACE INTO credentials (id, encrypted_value, updated_at) VALUES (?, ?, datetime('now'))`
-    );
-    stmt.run(id, encrypted);
+    try {
+      db.prepare(
+        `INSERT OR REPLACE INTO credentials
+           (id, encrypted_value, kind, provider_id, token_type, scope, expires_at, refreshable,
+            status, last_refreshed_at, label, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+      ).run(
+        id,
+        encrypted,
+        meta.kind ?? 'api-key',
+        meta.providerId ?? null,
+        meta.tokenType ?? null,
+        meta.scope ?? null,
+        meta.expiresAt ?? null,
+        meta.refreshable ? 1 : 0,
+        meta.status ?? 'active',
+        meta.lastRefreshedAt ?? null,
+        meta.label ?? null
+      );
+    } catch {
+      db.prepare(
+        'INSERT OR REPLACE INTO credentials (id, encrypted_value, updated_at) VALUES (?, ?, datetime(\'now\'))'
+      ).run(id, encrypted);
+    }
+  }
+
+  /** Read metadata only — never decrypts, so it is cheap enough for list views. */
+  readMetadata(id: string): CredentialMetadata | null {
+    try {
+      const row = getDatabase()
+        .prepare(
+          `SELECT kind, provider_id, token_type, scope, expires_at, refreshable, status,
+                  last_refreshed_at, label
+           FROM credentials WHERE id = ?`
+        )
+        .get(id) as CredentialMetaRow | undefined;
+      if (!row) return null;
+      return {
+        kind: (row.kind ?? 'api-key') as CredentialMetadata['kind'],
+        providerId: row.provider_id ?? undefined,
+        tokenType: row.token_type ?? undefined,
+        scope: row.scope ?? undefined,
+        expiresAt: row.expires_at ?? null,
+        refreshable: Number(row.refreshable ?? 0) === 1,
+        status: (row.status ?? 'active') as CredentialMetadata['status'],
+        lastRefreshedAt: row.last_refreshed_at ?? null,
+        label: row.label ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Flip the status column, e.g. marking a token `expired` after a failed refresh. */
+  updateStatus(id: string, status: NonNullable<CredentialMetadata['status']>): void {
+    try {
+      getDatabase()
+        .prepare(
+          "UPDATE credentials SET status = ?, updated_at = datetime('now') WHERE id = ?"
+        )
+        .run(status, id);
+    } catch {
+      /* pre-migration database: status is simply not trackable yet */
+    }
   }
 
   retrieve(id: string): string | null {

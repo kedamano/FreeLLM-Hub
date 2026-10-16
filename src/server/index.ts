@@ -7,8 +7,10 @@ import { getDatabase, closeDatabase } from '../core/database/database.js';
 import { getCredentialStore } from '../main/security/credential-store.js';
 import { getProviderRegistry } from '../core/providers/index.js';
 import { registerAllProviders, applyPersistedProviderEnabledFromSettings } from '../core/providers/bootstrap.js';
-import { readSetting } from '../core/settings/settings-store.js';
+import { readProfileSetting, ensureProfilesSeeded } from '../core/settings/profile-store.js';
 import { hydrateQuotasFromSettings } from '../main/services/provider-service.js';
+import { watchProfileChanges } from '../main/services/profile-service.js';
+import { oauthTokenSourceFor, shutdownOAuthFlows } from '../main/services/oauth-service.js';
 import { startLogRetentionSchedule } from '../usage/log-retention.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { GatewayManager } from '../main/gateway/gateway-manager.js';
@@ -51,10 +53,11 @@ export async function startServer(options: StartServerOptions = {}) {
 
   getDatabase();
   getCredentialStore();
+  ensureProfilesSeeded();
 
   const registry = getProviderRegistry();
-  registerAllProviders(registry, getCredentialStore());
-  applyPersistedProviderEnabledFromSettings(readSetting, registry);
+  registerAllProviders(registry, getCredentialStore(), { tokenSourceFor: oauthTokenSourceFor });
+  applyPersistedProviderEnabledFromSettings(readProfileSetting, registry);
 
   const scheduler = new Scheduler();
   const gateway = new GatewayManager(scheduler, {
@@ -83,6 +86,9 @@ export async function startServer(options: StartServerOptions = {}) {
     console.log(`[Web] 已加载 ${quotaProviders.length} 个供应商的每日配额配置`);
   }
   const disposeLogRetention = startLogRetentionSchedule();
+  // Re-apply the pool whenever the active profile changes (the Admin API can switch it
+  // without a restart, and there is no IPC layer in web mode to do it eagerly).
+  const disposeProfileWatch = watchProfileChanges(scheduler);
 
   await registerAdminApi(app, { scheduler, gateway, version: readVersion() });
   registerStaticRenderer(app, rendererDir);
@@ -98,6 +104,8 @@ export async function startServer(options: StartServerOptions = {}) {
     if (closing) return;
     closing = true;
     console.log(`[Web] ${signal} received, shutting down...`);
+    disposeProfileWatch();
+    shutdownOAuthFlows();
     disposeLogRetention();
     await app.close().catch(() => undefined);
     await gateway.stop().catch(() => undefined);

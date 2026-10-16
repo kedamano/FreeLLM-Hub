@@ -7,6 +7,9 @@ import * as modelService from '../main/services/model-service.js';
 import * as schedulerService from '../main/services/scheduler-service.js';
 import * as settingsService from '../main/services/settings-service.js';
 import * as usageService from '../main/services/usage-service.js';
+import * as profileService from '../main/services/profile-service.js';
+import * as oauthService from '../main/services/oauth-service.js';
+import { clampDays, normalizeAuditQuery } from '../usage/audit-query.js';
 import { getAppConfig } from '../core/config/app-config.js';
 
 export interface AdminApiOptions {
@@ -105,12 +108,40 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
     async (request) => providerService.setProviderQuota(scheduler, request.params.id, request.body)
   );
 
+  app.post<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    '/api/providers/:id/oauth',
+    async (request) => providerService.configureOAuth(scheduler, request.params.id, request.body)
+  );
+
   app.post<{ Params: { id: string } }>('/api/providers/:id/discover-models', async (request) =>
     providerService.discoverProviderModels(request.params.id)
   );
 
   app.get<{ Params: { id: string } }>('/api/providers/:id/models', async (request) =>
     providerService.getPersistedProviderModels(request.params.id)
+  );
+
+  // ─── OAuth ─────────────────────────────────────────────────────────
+  app.post<{ Params: { providerId: string } }>(
+    '/api/oauth/:providerId/authorize',
+    async (request) => oauthService.startAuthorization(request.params.providerId)
+  );
+
+  app.get<{ Params: { state: string } }>('/api/oauth/flows/:state', async (_request, reply) =>
+    sendValue(reply, oauthService.flowStatus(_request.params.state))
+  );
+
+  app.post<{ Params: { state: string } }>('/api/oauth/flows/:state/cancel', async (request) =>
+    oauthService.cancelAuthorization(request.params.state)
+  );
+
+  app.post<{ Params: { providerId: string } }>(
+    '/api/oauth/:providerId/refresh',
+    async (request) => oauthService.refreshNow(request.params.providerId)
+  );
+
+  app.delete<{ Params: { providerId: string } }>('/api/oauth/:providerId', async (request) =>
+    oauthService.unlink(request.params.providerId)
   );
 
   // ─── Models ────────────────────────────────────────────────────────
@@ -137,6 +168,78 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
 
   app.get<{ Querystring: { limit?: string } }>('/api/usage/recent', async (request) =>
     usageService.usageRecentCalls(request.query.limit ? Number(request.query.limit) : undefined)
+  );
+
+  app.get<{ Querystring: { days?: string; profileId?: string } }>(
+    '/api/usage/cost',
+    async (request) =>
+      usageService.usageCostSummary(clampDays(request.query.days, 30), request.query.profileId)
+  );
+
+  app.get<{ Querystring: { profileId?: string } }>('/api/usage/quota', async (request) =>
+    usageService.usageQuotaUsage(request.query.profileId)
+  );
+
+  app.get<{ Querystring: { days?: string; profileId?: string } }>(
+    '/api/usage/timeseries-by-provider',
+    async (request) =>
+      usageService.usageDailyByProvider(
+        clampDays(request.query.days, 14),
+        request.query.profileId
+      )
+  );
+
+  // ─── Gateway request audit ────────────────────────────────────────
+  app.post<{ Body: unknown }>('/api/audit/list', async (request) =>
+    usageService.auditList(normalizeAuditQuery(request.body))
+  );
+
+  app.get<{ Querystring: Record<string, string> }>('/api/audit/requests', async (request) =>
+    usageService.auditList(normalizeAuditQuery(request.query))
+  );
+
+  app.get<{ Params: { requestId: string } }>(
+    '/api/audit/requests/:requestId',
+    async (request, reply) =>
+      sendValue(reply, usageService.auditDetail(request.params.requestId))
+  );
+
+  app.get<{ Querystring: { days?: string; profileId?: string } }>(
+    '/api/audit/summary',
+    async (request) =>
+      usageService.auditSummary(clampDays(request.query.days, 7), request.query.profileId)
+  );
+
+  // ─── Configuration profiles ───────────────────────────────────────
+  app.get('/api/profiles', async () => profileService.listProfileViews());
+  app.get('/api/profiles/active', async () => profileService.activeProfileView());
+
+  app.post<{ Body: { name?: string; description?: string; copyFrom?: string } }>(
+    '/api/profiles',
+    async (request) => profileService.createProfile(request.body ?? {})
+  );
+
+  app.put<{ Params: { id: string }; Body: { name?: string; description?: string } }>(
+    '/api/profiles/:id',
+    async (request) => profileService.renameProfile(request.params.id, request.body ?? {})
+  );
+
+  app.delete<{ Params: { id: string } }>('/api/profiles/:id', async (request) =>
+    profileService.removeProfile(request.params.id)
+  );
+
+  app.post<{ Params: { id: string } }>('/api/profiles/:id/activate', async (request) =>
+    profileService.switchProfile(scheduler, request.params.id)
+  );
+
+  app.post<{ Body: { from?: string; to?: string } }>(
+    '/api/profiles/duplicate',
+    async (request) =>
+      profileService.duplicateIntoProfile(String(request.body?.from ?? ''), String(request.body?.to ?? ''))
+  );
+
+  app.post<{ Params: { id: string } }>('/api/profiles/:id/reset-pool', async (request) =>
+    profileService.resetProfilePool(request.params.id)
   );
 
   // ─── Settings ──────────────────────────────────────────────────────

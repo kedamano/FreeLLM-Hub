@@ -1,8 +1,18 @@
 import type { Scheduler } from './scheduler.js';
 import type { QuotaConfig } from './quota-manager.js';
-import { deleteSetting, readSetting, writeSetting } from '../core/settings/settings-store.js';
+import {
+  deleteProfileSetting,
+  readProfileSetting,
+  writeProfileSetting,
+} from '../core/settings/profile-store.js';
 
 export const QUOTA_KEY_PREFIX = 'provider-quota:';
+
+/**
+ * Daily quotas are profile-scoped: a work project and a side project may give the same
+ * provider very different ceilings. For the `default` profile the key stays the bare
+ * `provider-quota:<id>`, so nothing moves for existing installations.
+ */
 
 export interface QuotaInput {
   maxRequestsPerDay?: number;
@@ -31,7 +41,10 @@ export function validateQuotaInput(input: QuotaInput): string | null {
   return null;
 }
 
-export function readQuota(providerId: string, read: (key: string) => string | null = readSetting): QuotaInput | undefined {
+export function readQuota(
+  providerId: string,
+  read: (key: string) => string | null = readProfileSetting
+): QuotaInput | undefined {
   const raw = read(quotaSettingsKey(providerId));
   if (!raw) return undefined;
   try {
@@ -50,8 +63,8 @@ export function readQuota(providerId: string, read: (key: string) => string | nu
 export function writeQuota(
   providerId: string,
   quota: QuotaInput,
-  write: (key: string, value: string) => void = writeSetting,
-  remove: (key: string) => void = deleteSetting
+  write: (key: string, value: string) => void = writeProfileSetting,
+  remove: (key: string) => void = deleteProfileSetting
 ): void {
   const effective: QuotaInput = {};
   if (quota.maxRequestsPerDay) effective.maxRequestsPerDay = quota.maxRequestsPerDay;
@@ -76,12 +89,17 @@ export function quotaConfigFor(providerId: string, quota?: QuotaInput): QuotaCon
 export function applyQuotaConfigsFromSettings(
   scheduler: Scheduler,
   providerIds: string[],
-  read: (key: string) => string | null = readSetting
+  read: (key: string) => string | null = readProfileSetting
 ): string[] {
   const applied: string[] = [];
   for (const providerId of providerIds) {
     const quota = readQuota(providerId, read);
-    if (!quota) continue;
+    if (!quota) {
+      // A profile that does not configure a provider must not inherit the previous
+      // profile's limit that is still live in the scheduler.
+      scheduler.getQuotaManager().clearConfig(providerId);
+      continue;
+    }
     scheduler.setQuotaConfig(quotaConfigFor(providerId, quota));
     applied.push(providerId);
   }

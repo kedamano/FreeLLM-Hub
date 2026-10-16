@@ -8,15 +8,33 @@ import {
   type QuotaInput,
 } from '../../scheduler/quota-settings.js';
 import { createQuotaPersistence } from '../../usage/quota-store.js';
-import type { ModelCapabilities, ModelPricing, ProviderModel } from '../../shared/types/index.js';
+import type {
+  AuthType,
+  ModelCapabilities,
+  ModelPricing,
+  ProviderModel,
+} from '../../shared/types/index.js';
 import { getProviderRegistry } from '../../core/providers/index.js';
 import { applyEnabled, applyCredential, hotSwap, ENABLED_KEY_PREFIX, makeCustomProviderId, settingsBackedStore } from '../../core/providers/bootstrap.js';
 import { updateProviderConfig, persistProviderConfig } from '../../core/providers/provider-state.js';
 import type { ProviderConfig } from '../../shared/types/index.js';
-import { OpenAICompatibleAdapter } from '../../core/providers/openai-compatible/adapter.js';
+import {
+  OpenAICompatibleAdapter,
+  type OAuthTokenSource,
+} from '../../core/providers/openai-compatible/adapter.js';
+import {
+  oauthConfigFields,
+  resolveOAuthSpec,
+} from '../../core/providers/oauth/oauth-manager.js';
+import {
+  credentialState as readOAuthCredentialState,
+  oauthTokenSourceFor,
+  setOAuthClientSecret,
+} from './oauth-service.js';
 import { getCredentialStore } from '../security/credential-store.js';
 import { redactSecrets } from '../security/secret-redaction.js';
 import { deleteSetting, writeSetting } from '../../core/settings/settings-store.js';
+import { readProfileSetting, writeProfileSetting } from '../../core/settings/profile-store.js';
 import { getDatabase } from '../../core/database/database.js';
 
 export const MAX_CREDENTIALS_PER_PROVIDER = 5;
@@ -128,6 +146,8 @@ export function listProviders(scheduler: Scheduler) {
       hasCredential: listCredentialKeys(config.id).length > 0,
       quota: readQuota(config.id),
       quotaRemaining: scheduler.getQuotaManager().getRemainingQuota(config.id),
+      // Non-secret OAuth snapshot: expiry, scope, refresh availability.
+      oauth: readOAuthCredentialState(config.id),
     };
   });
 }
@@ -290,13 +310,21 @@ export function createCustomProvider(input: {
   name?: unknown;
   baseUrl?: unknown;
   apiKey?: unknown;
+  authType?: unknown;
+  oauth?: unknown;
 }): { success: boolean; providerId?: string; error?: string } {
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim().replace(/\/$/, '') : '';
   const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+  const authType: AuthType = input.authType === 'oauth' ? 'oauth' : 'api-key';
+  const oauth = normaliseOAuthInput(input.oauth);
 
   if (!name || name.length > 60) return { success: false, error: '名称无效（1-60 个字符）' };
   if (!/^https?:\/\/[^\s]+$/i.test(baseUrl)) return { success: false, error: 'Base URL 必须以 http(s):// 开头' };
+  if (authType === 'oauth') {
+    const invalid = validateOAuthInput(oauth);
+    if (invalid) return { success: false, error: invalid };
+  }
 
   const registry = getProviderRegistry();
   const db = getDatabase();
@@ -310,20 +338,39 @@ export function createCustomProvider(input: {
     providerId,
     providerName: name,
     baseUrl,
-    authType: 'api-key',
+    authType,
     isBuiltIn: false,
-    credentialId: apiKey ? `${providerId}-key` : undefined,
-    defaultHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    credentialId: authType === 'oauth' ? `${providerId}-oauth` : apiKey ? `${providerId}-key` : undefined,
+    defaultHeaders: authType === 'oauth' || !apiKey ? {} : { Authorization: `Bearer ${apiKey}` },
+    configFields: authType === 'oauth' ? oauthConfigFields() : [],
+    // OAuth providers are only usable once the browser flow has produced a token.
+    ...(authType === 'oauth' ? { tokenSource: oauthTokenSourceFor(providerId) } : {}),
   });
   registry.register(adapter);
 
   db.prepare(`
     INSERT INTO providers (id, display_name, auth_type, base_url, is_enabled, is_built_in, credential_status)
-    VALUES (?, ?, 'api-key', ?, 1, 0, ?)
-  `).run(providerId, name, baseUrl, apiKey ? 'configured' : 'unconfigured');
-  writeSetting(`${ENABLED_KEY_PREFIX}${providerId}`, 'true');
+    VALUES (?, ?, ?, ?, 1, 0, 'unconfigured')
+  `).run(providerId, name, authType, baseUrl);
+  writeProfileSetting(`${ENABLED_KEY_PREFIX}${providerId}`, 'true');
 
-  if (apiKey) {
+  if (authType === 'oauth' && oauth) {
+    writeProfileSetting(
+      `provider-settings:${providerId}`,
+      JSON.stringify({
+        oauth: true,
+        authorizationUrl: oauth.authorizationUrl,
+        tokenUrl: oauth.tokenUrl,
+        clientId: oauth.clientId,
+        scopes: oauth.scopes,
+        usePkce: oauth.usePkce,
+        baseUrl,
+      })
+    );
+    if (oauth.clientSecret) setOAuthClientSecret(providerId, oauth.clientSecret);
+  }
+
+  if (authType === 'api-key' && apiKey) {
     try {
       getCredentialStore().store(`${providerId}-key`, apiKey);
     } catch (err) {
@@ -333,6 +380,110 @@ export function createCustomProvider(input: {
     }
   }
   return { success: true, providerId };
+}
+
+export interface OAuthInput {
+  authorizationUrl: string;
+  tokenUrl: string;
+  clientId: string;
+  clientSecret?: string;
+  scopes: string;
+  usePkce: boolean;
+}
+
+function normaliseOAuthInput(input: unknown): OAuthInput | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const raw = input as Record<string, unknown>;
+  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  return {
+    authorizationUrl: text(raw.authorizationUrl),
+    tokenUrl: text(raw.tokenUrl),
+    clientId: text(raw.clientId),
+    clientSecret: text(raw.clientSecret) || undefined,
+    scopes: text(raw.scopes),
+    usePkce: raw.usePkce !== false,
+  };
+}
+
+function validateOAuthInput(oauth: OAuthInput | null): string | null {
+  if (!oauth) return '请填写 OAuth 配置';
+  const isUrl = (value: string) => /^https:\/\/[^\s]+$/i.test(value);
+  if (!isUrl(oauth.authorizationUrl)) return '授权端点必须是 https:// 地址';
+  if (!isUrl(oauth.tokenUrl)) return '令牌端点必须是 https:// 地址';
+  if (!oauth.clientId) return 'Client ID 不能为空';
+  if (oauth.scopes.length > 300) return 'Scopes 过长';
+  return null;
+}
+
+/**
+ * Update a provider's OAuth endpoints / client id. The client secret goes to the
+ * encrypted store, everything else is plain provider settings, and the live adapter is
+ * re-attached so the change takes effect without a restart.
+ */
+export function configureOAuth(
+  scheduler: Scheduler,
+  providerId: string,
+  input: unknown
+): { success: boolean; error?: string; config?: unknown } {
+  const registry = getProviderRegistry();
+  const adapter = registry.get(providerId);
+  if (!adapter) return { success: false, error: 'Provider not found' };
+  const oauth = normaliseOAuthInput(input);
+  const invalid = validateOAuthInput(oauth);
+  if (invalid || !oauth) return { success: false, error: invalid ?? '请填写 OAuth 配置' };
+
+  const existing = readProfileSetting(`provider-settings:${providerId}`);
+  let merged: Record<string, unknown> = {};
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        merged = parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* corrupted settings row: start fresh */
+    }
+  }
+
+  writeProfileSetting(
+    `provider-settings:${providerId}`,
+    JSON.stringify({
+      ...merged,
+      oauth: true,
+      authorizationUrl: oauth.authorizationUrl,
+      tokenUrl: oauth.tokenUrl,
+      clientId: oauth.clientId,
+      scopes: oauth.scopes,
+      usePkce: oauth.usePkce,
+    })
+  );
+  setOAuthClientSecret(providerId, oauth.clientSecret ?? '');
+
+  reattachOAuthTokenSource(adapter);
+  scheduler.registerProviderConfig(adapter.getProviderConfig());
+  getDatabase()
+    .prepare("UPDATE providers SET auth_type = 'oauth', updated_at = datetime('now') WHERE id = ?")
+    .run(providerId);
+
+  return { success: true, config: adapter.getProviderConfig() };
+}
+
+/** Re-run the OAuth attachment decision for one adapter after its settings changed. */
+function reattachOAuthTokenSource(adapter: {
+  providerId: string;
+  getProviderConfig(): ProviderConfig;
+  setTokenSource?: (source: OAuthTokenSource | undefined) => void;
+}): void {
+  const config = adapter.getProviderConfig();
+  const spec = resolveOAuthSpec(
+    config.id,
+    config.displayName,
+    config.baseUrl,
+    { retrieve: (id) => getCredentialStore().retrieve(id) }
+  );
+  if (spec && typeof adapter.setTokenSource === 'function') {
+    adapter.setTokenSource(oauthTokenSourceFor(config.id));
+  }
 }
 
 export function deleteCustomProvider(scheduler: Scheduler, providerId: string): { success: boolean; error?: string } {

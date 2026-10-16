@@ -11,7 +11,9 @@ test.describe('FreeLLM Hub App', () => {
     await expect(page.locator('text=仪表盘')).toBeVisible();
     await expect(page.locator('text=服务商')).toBeVisible();
     await expect(page.locator('text=模型目录')).toBeVisible();
-    await expect(page.locator('text=用量统计')).toBeVisible();
+    await expect(page.locator('text=用量与成本')).toBeVisible();
+    await expect(page.locator('text=请求审计')).toBeVisible();
+    await expect(page.locator('text=配置档')).toBeVisible();
     await expect(page.locator('text=设置')).toBeVisible();
   });
 
@@ -29,8 +31,20 @@ test.describe('FreeLLM Hub App', () => {
 
   test('should navigate to usage page', async ({ page }) => {
     await page.goto('/');
-    await page.click('text=用量统计');
-    await expect(page.locator('text=用量统计')).toBeVisible();
+    await page.click('text=用量与成本');
+    await expect(page.locator('h2', { hasText: '用量与成本' })).toBeVisible();
+  });
+
+  test('should navigate to the request audit page', async ({ page }) => {
+    await page.goto('/');
+    await page.click('text=请求审计');
+    await expect(page.locator('h2', { hasText: '请求审计' })).toBeVisible();
+  });
+
+  test('should navigate to the profiles page', async ({ page }) => {
+    await page.goto('/');
+    await page.click('text=配置档');
+    await expect(page.locator('h2', { hasText: '配置档' })).toBeVisible();
   });
 
   test('should navigate to settings page', async ({ page }) => {

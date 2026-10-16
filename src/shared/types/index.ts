@@ -172,6 +172,16 @@ export interface CallLog {
   promptTokens: number;
   completionTokens: number;
   errorMessage?: string;
+  totalTokens?: number;
+  profileId?: string;
+  statusCode?: number;
+  stream?: boolean;
+  attempt?: number;
+  costUsd?: number;
+  referenceCostUsd?: number;
+  savedCostUsd?: number;
+  pricingType?: ModelPricingType;
+  currency?: string;
 }
 
 export interface DashboardStats {
@@ -179,6 +189,7 @@ export interface DashboardStats {
   successRate: number;
   totalTokensUsed: number;
   totalCostSaved: number;
+  totalCostUsd: number;
   activeProviders: number;
   availableModels: number;
   recentCalls: CallLog[];
@@ -192,6 +203,9 @@ export interface ProviderUsageStat {
   tokenCount: number;
   successCount: number;
   errorCount: number;
+  costUsd?: number;
+  savedCostUsd?: number;
+  avgDurationMs?: number;
 }
 
 export const DEFAULT_TASK_TYPE: TaskType = 'general';

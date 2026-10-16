@@ -5,6 +5,8 @@ interface QuotaState {
   modelId?: string;
   requestCount: number;
   tokenCount: number;
+  /** Accumulated USD for the window, so the quota panel needs no log scan. */
+  costUsd: number;
   periodStart: string;
   periodEnd: string;
 }
@@ -21,6 +23,7 @@ export interface PersistedQuotaState {
   modelId?: string;
   requestCount: number;
   tokenCount: number;
+  costUsd?: number;
   periodStart: string;
   periodEnd: string;
 }
@@ -66,12 +69,31 @@ export class QuotaManager {
         modelId,
         requestCount: row.requestCount,
         tokenCount: row.tokenCount,
+        costUsd: row.costUsd ?? 0,
         periodStart: row.periodStart,
         periodEnd: row.periodEnd,
       });
       restored++;
     }
     return restored;
+  }
+
+  /**
+   * Drop every in-memory usage bucket without writing anything. Used when switching
+   * configuration profiles: each profile keeps its own daily counters in
+   * `quota_tracking`, so the next `hydrate()` reloads the right ones.
+   */
+  clearUsageState(): void {
+    this.quotas.clear();
+  }
+
+  /** Drop every configured limit as well as usage — the profile switch path. */
+  clearAllConfigs(): void {
+    this.configs.clear();
+  }
+
+  getConfiguredProviderIds(): ProviderId[] {
+    return [...this.configs.values()].map((config) => config.providerId);
   }
 
   canProceed(providerId: ProviderId, modelId?: string, estimatedTokens?: number): boolean {
@@ -99,12 +121,14 @@ export class QuotaManager {
     providerId: ProviderId,
     requests: number = 1,
     tokens: number = 0,
-    modelId?: string
+    modelId?: string,
+    costUsd: number = 0
   ): void {
     // Charge the model bucket when the call was model scoped...
     const state = this.getOrCreateState(providerId, modelId);
     state.requestCount += requests;
     state.tokenCount += tokens;
+    state.costUsd += costUsd;
     this.persist(state);
 
     // ...and always keep the provider bucket in sync, because that is the scope
@@ -113,6 +137,7 @@ export class QuotaManager {
       const providerState = this.getOrCreateState(providerId);
       providerState.requestCount += requests;
       providerState.tokenCount += tokens;
+      providerState.costUsd += costUsd;
       this.persist(providerState);
     }
   }
@@ -158,6 +183,7 @@ export class QuotaManager {
         ...state,
         requestCount: 0,
         tokenCount: 0,
+        costUsd: 0,
         periodStart: now.toISOString(),
         periodEnd: periodEnd.toISOString(),
       };
@@ -182,6 +208,7 @@ export class QuotaManager {
         modelId: state.modelId,
         requestCount: state.requestCount,
         tokenCount: state.tokenCount,
+        costUsd: state.costUsd,
         periodStart: state.periodStart,
         periodEnd: state.periodEnd,
       });
@@ -219,6 +246,7 @@ export class QuotaManager {
       modelId,
       requestCount: 0,
       tokenCount: 0,
+      costUsd: 0,
       periodStart: now.toISOString(),
       periodEnd: periodEnd.toISOString(),
     };
