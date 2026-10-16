@@ -316,7 +316,7 @@ export class GatewayServer {
       recordCall({
         requestId: request.requestId,
         providerId: 'unknown' as ProviderId,
-        modelId: 'unknown',
+        modelId: request.model ?? 'unknown',
         taskType: request.taskType,
         status: 'error',
         durationMs: Date.now() - startTime,
@@ -378,7 +378,7 @@ export class GatewayServer {
 
     (async () => {
       let providerId: ProviderId = 'unknown';
-      let modelId = 'unknown';
+      let modelId = request.model ?? 'unknown';
       let finishReason = 'stop';
       let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
