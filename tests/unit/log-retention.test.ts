@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// log-retention logs through the structured logger now; assert there, not on console.
+// log-retention delegates its sweep to data-governance; mock that boundary so the
+// tests assert what log-retention actually controls (when to sweep, when to warn).
 const logWarn = vi.hoisted(() => vi.fn());
 vi.mock('../../src/core/log/logger', () => ({
   loggerFor: () => ({ warn: logWarn, info: logWarn, error: logWarn, debug: logWarn }),
@@ -8,6 +9,7 @@ vi.mock('../../src/core/log/logger', () => ({
 
 const deleteOldLogs = vi.fn();
 const readSetting = vi.fn();
+const purgeWithRetentionPolicies = vi.fn();
 
 vi.mock('../../src/usage/usage-recorder', () => ({
   deleteOldLogs: (before: string) => deleteOldLogs(before),
@@ -15,6 +17,13 @@ vi.mock('../../src/usage/usage-recorder', () => ({
 
 vi.mock('../../src/core/settings/settings-store', () => ({
   readSetting: (key: string) => readSetting(key),
+}));
+
+vi.mock('../../src/usage/data-governance', () => ({
+  purgeWithRetentionPolicies: (...args: unknown[]) => purgeWithRetentionPolicies(...args),
+  resolveAuditRetention: () => 7,
+  exportCallLogs: () => '',
+  wipeUserData: () => ({ callLogs: 0, auditRequests: 0, auditEvents: 0, quotaRows: 0 }),
 }));
 
 import {
@@ -63,23 +72,23 @@ describe('log retention', () => {
   it('sweeps on a fixed interval and stops on dispose', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(Date.UTC(2026, 9, 16)));
-    deleteOldLogs.mockReturnValue(1);
+    purgeWithRetentionPolicies.mockReturnValue({ callLogs: 1, auditRequests: 1, auditEvents: 1 });
 
     const dispose = startLogRetentionSchedule(60_000);
 
-    expect(deleteOldLogs).toHaveBeenCalledTimes(1);
+    expect(purgeWithRetentionPolicies).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(120_000);
-    expect(deleteOldLogs).toHaveBeenCalledTimes(3);
+    expect(purgeWithRetentionPolicies).toHaveBeenCalledTimes(3);
 
     dispose();
     vi.advanceTimersByTime(600_000);
-    expect(deleteOldLogs).toHaveBeenCalledTimes(3);
+    expect(purgeWithRetentionPolicies).toHaveBeenCalledTimes(3);
   });
 
   it('keeps the schedule alive when a sweep throws', () => {
     vi.useFakeTimers();
     logWarn.mockClear();
-    deleteOldLogs.mockImplementation(() => {
+    purgeWithRetentionPolicies.mockImplementation(() => {
       throw new Error('SQLITE_BUSY');
     });
 
