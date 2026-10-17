@@ -13,7 +13,9 @@ const pages = [
   { label: '仪表盘', file: 'dashboard.png' },
   { label: '服务商', file: 'providers.png' },
   { label: '模型目录', file: 'models.png' },
-  { label: '用量统计', file: 'usage.png' },
+  { label: '用量与成本', file: 'usage.png' },
+  { label: '请求审计', file: 'audit.png' },
+  { label: '配置档', file: 'profiles.png' },
 ];
 
 mkdirSync(outDir, { recursive: true });
