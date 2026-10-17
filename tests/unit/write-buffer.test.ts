@@ -246,6 +246,9 @@ describe('statement cache', () => {
 
   it('never hands a statement prepared for one connection to another', async () => {
     const other = (await openTestDatabase()).db;
+    // Migrations must run on the second connection too, or prepare() throws
+    // "no such table" before the per-connection assertion can be tested.
+    runMigrations(other as never);
     const first = prepared(holder.db, INSERT_ROW);
     expect(prepared(other, INSERT_ROW)).not.toBe(first);
     other.close();

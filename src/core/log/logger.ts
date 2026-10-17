@@ -51,8 +51,10 @@ function readLogLimits() {
     return {
       level: LOG_LEVELS.find((level) => level === config.logLevel) ?? 'info',
       file: resolvePath(config.logDir, 'app.log'),
-      maxSizeMb: config.logMaxSizeMb,
-      maxFiles: config.logMaxFiles,
+      maxSizeMb: Math.max(1, Number(config.logMaxSizeMb) || 10),
+      // pino-roll rejects limit.count <= 0; test mocks of getAppConfig() often omit
+      // these fields, and undefined passes the destructure as undefined.
+      maxFiles: Math.max(1, Number(config.logMaxFiles) || 5),
     };
   } catch {
     return {
