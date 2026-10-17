@@ -85,6 +85,9 @@ const api = {
     auditList: (query?: Record<string, unknown>) => invoke('usage:audit-list', query),
     auditDetail: (requestId: string) => invoke('usage:audit-detail', requestId),
     auditSummary: (days?: number, profileId?: string) => invoke('usage:audit-summary', days, profileId),
+    exportLogs: (input?: { format?: 'csv' | 'jsonl'; profileId?: string; limit?: number }) =>
+      invoke('usage:export-logs', input),
+    wipeData: (input?: { profileId?: string }) => invoke('usage:wipe-data', input),
   },
 
   profiles: {
