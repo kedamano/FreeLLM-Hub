@@ -17,6 +17,8 @@ export const QUOTA_KEY_PREFIX = 'provider-quota:';
 export interface QuotaInput {
   maxRequestsPerDay?: number;
   maxTokensPerDay?: number;
+  /** 'rolling' (default) or 'utc-daily'; see reset-policy.ts. */
+  resetPolicy?: 'rolling' | 'utc-daily';
 }
 
 export function quotaSettingsKey(providerId: string): string {
@@ -37,7 +39,14 @@ export function validateQuotaInput(input: QuotaInput): string | null {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > limit) {
       return `${field} 需要是 0 到 ${limit} 之间的数字（0 表示不限制）`;
     }
+  }  if (
+    input.resetPolicy !== undefined &&
+    input.resetPolicy !== 'rolling' &&
+    input.resetPolicy !== 'utc-daily'
+  ) {
+    return "resetPolicy 只能是 'rolling' 或 'utc-daily'";
   }
+
   return null;
 }
 
@@ -54,6 +63,9 @@ export function readQuota(
     const quota: QuotaInput = {};
     if (Number.isFinite(requests) && requests > 0) quota.maxRequestsPerDay = requests;
     if (Number.isFinite(tokens) && tokens > 0) quota.maxTokensPerDay = tokens;
+    if (parsed.resetPolicy === 'utc-daily' || parsed.resetPolicy === 'rolling') {
+      quota.resetPolicy = parsed.resetPolicy;
+    }
     return Object.keys(quota).length > 0 ? quota : undefined;
   } catch {
     return undefined;
@@ -69,6 +81,7 @@ export function writeQuota(
   const effective: QuotaInput = {};
   if (quota.maxRequestsPerDay) effective.maxRequestsPerDay = quota.maxRequestsPerDay;
   if (quota.maxTokensPerDay) effective.maxTokensPerDay = quota.maxTokensPerDay;
+  if (quota.resetPolicy) effective.resetPolicy = quota.resetPolicy;
 
   if (Object.keys(effective).length === 0) {
     remove(quotaSettingsKey(providerId));
@@ -82,6 +95,7 @@ export function quotaConfigFor(providerId: string, quota?: QuotaInput): QuotaCon
     providerId: providerId as QuotaConfig['providerId'],
     maxRequestsPerDay: quota?.maxRequestsPerDay,
     maxTokensPerDay: quota?.maxTokensPerDay,
+    resetPolicy: quota?.resetPolicy,
   };
 }
 

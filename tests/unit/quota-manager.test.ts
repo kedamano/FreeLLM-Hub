@@ -294,3 +294,34 @@ describe('QuotaManager', () => {
     });
   });
 });
+
+describe('QuotaManager reset policies', () => {
+  it('anchors utc-daily windows at UTC midnight instead of first use', () => {
+    const manager = new QuotaManager();
+    manager.setConfig({
+      providerId: 'groq',
+      resetPolicy: 'utc-daily',
+      maxRequestsPerDay: 10,
+    });
+
+    manager.record('groq', 1, 100);
+    const state = manager.getUsage('groq');
+    const start = new Date(state.periodStart);
+    expect(start.toISOString()).toBe(start.toISOString().slice(0, 11) + '00:00:00.000Z');
+
+    const end = new Date(state.periodEnd);
+    // Both boundaries sit on UTC midnights exactly 24h apart.
+    expect(end.toISOString()).toMatch(/T00:00:00\.000Z$/);
+    expect(end.getTime() - start.getTime()).toBe(86_400_000);
+  });
+
+  it('keeps the rolling window as the default when no policy is set', () => {
+    const manager = new QuotaManager();
+    manager.setConfig({ providerId: 'cerebras', maxRequestsPerDay: 5 });
+    manager.record('cerebras', 1, 10);
+    const state = manager.getUsage('cerebras');
+    const start = Date.parse(state.periodStart);
+    const end = Date.parse(state.periodEnd);
+    expect(end - start).toBe(86_400_000);
+  });
+});

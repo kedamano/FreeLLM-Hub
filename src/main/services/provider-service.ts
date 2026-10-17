@@ -193,6 +193,9 @@ export function hydrateQuotasFromSettings(scheduler: Scheduler): string[] {
   );
 
   const quotaManager = scheduler.getQuotaManager();
+  // Providers without a quota row still need a window policy: read it from the
+  // profile-scoped settings so utc-daily works even when no limits are configured.
+  quotaManager.setResetPolicyReader(readProfileSetting);
   quotaManager.setPersistence(createQuotaPersistence());
   const restored = quotaManager.hydrate();
   if (restored > 0) {

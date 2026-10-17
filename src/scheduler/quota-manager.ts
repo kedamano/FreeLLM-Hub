@@ -1,4 +1,5 @@
 import type { ProviderId } from '../shared/types/index.js';
+import { parseResetPolicy, resetPolicyKey, windowFor, type QuotaResetPolicy } from './reset-policy.js';
 import { loggerFor } from '../core/log/logger.js';
 
 const log = loggerFor('quota');
@@ -19,6 +20,11 @@ export interface QuotaConfig {
   maxTokensPerDay?: number;
   providerId: ProviderId;
   modelId?: string;
+  /**
+   * How the daily window is anchored. Defaults to the historical rolling 24h;
+   * 'utc-daily' matches free tiers that reset at UTC midnight.
+   */
+  resetPolicy?: QuotaResetPolicy;
 }
 
 export interface PersistedQuotaState {
@@ -266,6 +272,19 @@ export class QuotaManager {
     return modelId ? `${providerId}:${modelId}` : providerId;
   }
 
+  /** The window policy in force for a provider (config override, else rolling). */
+  private policyFor(providerId: ProviderId): QuotaResetPolicy {
+    const config = this.configs.get(providerId);
+    return config?.resetPolicy ?? parseResetPolicy(this.readResetSetting?.(resetPolicyKey(providerId)) ?? null);
+  }
+
+  /** Optional settings hook so the policy is readable without a config row. */
+  readResetSetting?: (key: string) => string | null;
+
+  setResetPolicyReader(read: (key: string) => string | null): void {
+    this.readResetSetting = read;
+  }
+
   private getOrCreateState(providerId: ProviderId, modelId?: string): QuotaState {
     const key = this.getKey(providerId, modelId);
     let state = this.quotas.get(key);
@@ -283,16 +302,16 @@ export class QuotaManager {
   }
 
   private createState(providerId: ProviderId, modelId?: string): QuotaState {
-    const now = new Date();
-    const periodEnd = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const now = Date.now();
+    const window = windowFor(this.policyFor(providerId), now);
     return {
       providerId,
       modelId,
       requestCount: 0,
       tokenCount: 0,
       costUsd: 0,
-      periodStart: now.toISOString(),
-      periodEnd: periodEnd.toISOString(),
+      periodStart: window.periodStart,
+      periodEnd: window.periodEnd,
     };
   }
 }
