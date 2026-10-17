@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('../../src/core/database/database.js', () => {
   const settings = new Map<string, string>();
@@ -43,7 +43,8 @@ vi.mock('../../src/main/security/credential-store.js', () => {
 });
 
 import { getProviderRegistry } from '../../src/core/providers/registry';
-import { createCloudflareAdapter } from '../../src/core/providers/cloudflare/adapter';
+import { PROVIDER_SEEDS_BY_ID } from '../../src/core/providers/catalog';
+import { createStaticAdapter } from '../../src/core/providers/openai-compatible/static-adapter';
 import { createOllamaAdapter } from '../../src/core/providers/local/ollama-adapter';
 import { settingsBackedStore } from '../../src/core/providers/bootstrap';
 import { baseUrlKey, settingsKey } from '../../src/core/providers/provider-state';
@@ -55,7 +56,7 @@ describe('provider config persistence', () => {
   beforeEach(() => {
     registry.unregister('cloudflare');
     registry.unregister('ollama');
-    registry.register(createCloudflareAdapter(undefined, 'cf_token'));
+    registry.register(createStaticAdapter(PROVIDER_SEEDS_BY_ID.cloudflare, 'cf_token'));
     registry.register(createOllamaAdapter());
   });
 
@@ -90,5 +91,64 @@ describe('provider config persistence', () => {
     const res = providerService.updateProviderBaseUrl('ollama', '192.168.1.9:11434');
     expect(res.success).toBe(false);
     expect(res.error).toContain('http');
+  });
+});
+
+describe('manual model discovery reporting', () => {
+  const registry = getProviderRegistry();
+
+  function fakeAdapter(
+    providerId: string,
+    models: unknown[],
+    probe: { valid: boolean; reason?: string }
+  ) {
+    return {
+      providerId,
+      listModels: async () => models,
+      validateCredential: async () => probe,
+      isAvailable: async () => probe.valid,
+      getProviderConfig: () => ({ providerId, baseUrl: 'http://127.0.0.1:1', authType: 'api-key' }),
+    } as never;
+  }
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    registry.unregister('silent');
+    warn.mockRestore();
+  });
+
+  it('surfaces an unreachable service instead of reporting an empty catalogue', async () => {
+    registry.register(
+      fakeAdapter('silent', [], { valid: false, reason: '无法连接到 Ollama (http://localhost:11434): fetch failed' })
+    );
+
+    const res = await providerService.discoverProviderModels('silent');
+
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('fetch failed');
+    expect(res.models).toEqual([]);
+  });
+
+  it('keeps a genuinely empty catalogue successful', async () => {
+    registry.register(fakeAdapter('silent', [], { valid: true }));
+
+    const res = await providerService.discoverProviderModels('silent');
+
+    expect(res.success).toBe(true);
+    expect(res.models).toEqual([]);
+  });
+
+  it('does not probe when models came back', async () => {
+    const probe = vi.fn(async () => ({ valid: false, reason: 'should not be called' }));
+    registry.register({ ...fakeAdapter('silent', [{ id: 'llama-3.1-8b' }], { valid: false }), validateCredential: probe } as never);
+
+    const res = await providerService.discoverProviderModels('silent');
+
+    expect(res.success).toBe(true);
+    expect(probe).not.toHaveBeenCalled();
   });
 });

@@ -135,8 +135,21 @@ data: [DONE]
 | 504 | `TIMEOUT` | `timeout` | |
 | 502 | `NETWORK_ERROR` / `SERVER_ERROR` / 其他上游错误 | `upstream_error` | |
 
-流式请求在已产出首字节后失败时不会重放，只在 SSE 中输出上述错误对象并终止
-（没有 `data: [DONE]`）。日志与凭证只以掩码形式出现。
+流式请求的 HTTP 状态取决于失败发生在**首帧之前还是之后**：
+
+- 首帧之前失败（限流、鉴权、模型不可路由、超时等）：网关尚未提交 SSE 响应头，
+  直接按上表返回真实状态码与 JSON 错误体，`Retry-After` 等响应头照常有效，
+  SDK 无需从流里嗅探错误；
+- 首帧之后失败：`200` 已经发出，只能在 SSE 中输出上述错误对象并终止（没有 `data: [DONE]`），
+  也不会重放已发出的内容。
+
+客户端在首帧之前断开（取消请求）不会触发上游重试，审计记录以 `aborted` 收尾。
+日志与凭证只以掩码形式出现。
+
+#### 请求超时
+
+网关给每次上游尝试一个截止时间（`REQUEST_TIMEOUT_MS`，默认 60000，允许 1000 ~ 900000），
+到点即以 `TIMEOUT` / 504 结束并按正常回退链切换下一家。非法或过小的取值回落到默认值。
 
 ### 模型列表
 
@@ -204,9 +217,16 @@ GET /health
 | GET/POST | `/api/scheduler/status`、`/api/scheduler/reset-circuit`、`/api/scheduler/reset-all-circuits` | 调度器状态与熔断复位 |
 | GET/POST/PUT | `/api/gateway/status`、`/api/gateway/token`、`/api/gateway/generate-token`、`/api/gateway/config` | 网关状态、密钥与监听配置 |
 
+浏览器里的 UI 不用 IPC：`useIPC` 的 HTTP 客户端把每个通道翻译成 REST 调用，而**通道 → 方法 + 路径**
+的映射只写在 `src/shared/api-contract.ts` 一处（`ADMIN_ROUTE_BINDINGS` + `routeUrl()`）。
+`tests/integration/api-contract.test.ts` 会遍历全部 58 个通道逐个注入请求，只要有一条落到 404/405
+（路径改了名、方法对不上、或者忘了在服务端注册）就会失败，同时断言 preload 的 `invoke('channel')`
+与主进程的 `registerIpcHandler('channel')` 字面量集合与通道白名单完全相等。
+
 ## IPC API (Renderer <-> Main)
 
-通道白名单由 `src/shared/ipc-channels.ts` 单一定义生成，主进程守卫直接读取该数组。
+通道白名单由 `src/shared/ipc-channels.ts` 单一定义生成，主进程守卫直接读取该数组；
+每条通道对应的管理端 REST 路由见 `src/shared/api-contract.ts`。
 
 ### Provider 通道
 

@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+// log-retention logs through the structured logger now; assert there, not on console.
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock('../../src/core/log/logger', () => ({
+  loggerFor: () => ({ warn: logWarn, info: logWarn, error: logWarn, debug: logWarn }),
+}));
+
 const deleteOldLogs = vi.fn();
 const readSetting = vi.fn();
 
@@ -72,7 +78,7 @@ describe('log retention', () => {
 
   it('keeps the schedule alive when a sweep throws', () => {
     vi.useFakeTimers();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    logWarn.mockClear();
     deleteOldLogs.mockImplementation(() => {
       throw new Error('SQLITE_BUSY');
     });
@@ -80,8 +86,10 @@ describe('log retention', () => {
     const dispose = startLogRetentionSchedule(60_000);
     vi.advanceTimersByTime(60_000);
 
-    expect(warn).toHaveBeenCalledWith('[Usage] 调用记录清理失败:', 'SQLITE_BUSY');
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.objectContaining({ message: 'SQLITE_BUSY' }) }),
+      '调用记录清理失败'
+    );
     dispose();
-    warn.mockRestore();
   });
 });

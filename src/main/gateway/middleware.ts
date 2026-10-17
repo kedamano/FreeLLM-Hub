@@ -10,7 +10,7 @@ export function registerCommonMiddleware(app: FastifyInstance): void {
   app.addHook('onSend', async (request: FastifyRequest, reply: FastifyReply, payload) => {
     const responseTime = reply.elapsedTime;
     // `request.id` is the same id the audit row and the OpenAI-shaped response body
-    // use, so a line in gateway.log can be grepped straight into the audit panel.
+    // use, so a line in the rolled `gateway.*.log` can be grepped straight into the audit panel.
     request.log.info(
       {
         method: request.method,

@@ -1,6 +1,7 @@
-import { getDatabase } from '../core/database/database.js';
 import { redactSecrets } from '../main/security/secret-redaction.js';
 import { getActiveProfileId } from '../core/settings/profile-store.js';
+import { prepared } from '../core/database/statement-cache.js';
+import { queueWrite, readDatabase } from './write-buffer.js';
 import type { ProviderId, TaskType } from '../shared/types/index.js';
 import type {
   AuditEventType,
@@ -178,6 +179,48 @@ const INSERT_AUDIT_SQL = `
   ON CONFLICT(request_id) DO NOTHING
 `;
 
+const INSERT_EVENT_SQL = `
+  INSERT INTO request_audit_events
+    (request_id, seq, at, event, provider_id, model_id, attempt, status, status_code, reason, duration_ms, detail)
+  VALUES (?,
+          (SELECT COALESCE(MAX(seq), 0) + 1 FROM request_audit_events WHERE request_id = ?),
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+interface QueuedEvent {
+  requestId: string;
+  at: string;
+  event: AuditEventType | string;
+  providerId?: ProviderId | null;
+  modelId?: string | null;
+  attempt?: number | null;
+  status?: string | null;
+  statusCode?: number | null;
+  reason?: string | null;
+  durationMs?: number | null;
+  detail?: string | null;
+}
+
+/** `seq` is derived inside the statement, so queued events keep their enqueue order. */
+function queueAuditEventWrite(input: QueuedEvent): void {
+  queueWrite((db) =>
+    prepared(db, INSERT_EVENT_SQL).run(
+      input.requestId,
+      input.requestId,
+      input.at,
+      input.event,
+      input.providerId ?? null,
+      input.modelId ?? null,
+      input.attempt ?? null,
+      input.status ?? null,
+      input.statusCode ?? null,
+      input.reason ?? null,
+      input.durationMs ?? null,
+      input.detail ?? null
+    )
+  );
+}
+
 /**
  * Open the audit record for a request. Called as soon as the request id exists —
  * including for requests that are about to be rejected, which is precisely the
@@ -185,18 +228,21 @@ const INSERT_AUDIT_SQL = `
  */
 export function beginRequestAudit(input: BeginAuditInput): boolean {
   try {
-    const db = getDatabase();
-    db.prepare(INSERT_AUDIT_SQL).run(
-      input.requestId,
-      input.profileId ?? getActiveProfileId(),
-      new Date().toISOString(),
-      input.route,
-      input.method ?? 'POST',
-      input.stream ? 1 : 0,
-      input.requestedModel ?? null,
-      input.taskType ?? null,
-      safeStringify(input.params),
-      input.clientAddress ?? null
+    const startedAt = new Date().toISOString();
+    const profileId = input.profileId ?? getActiveProfileId();
+    queueWrite((db) =>
+      prepared(db, INSERT_AUDIT_SQL).run(
+        input.requestId,
+        profileId,
+        startedAt,
+        input.route,
+        input.method ?? 'POST',
+        input.stream ? 1 : 0,
+        input.requestedModel ?? null,
+        input.taskType ?? null,
+        safeStringify(input.params),
+        input.clientAddress ?? null
+      )
     );
     recordAuditEvent({
       requestId: input.requestId,
@@ -211,58 +257,52 @@ export function beginRequestAudit(input: BeginAuditInput): boolean {
 
 export function recordAuditEvent(input: AuditEventInput): boolean {
   try {
-    const db = getDatabase();
-    db.prepare(
-      `INSERT INTO request_audit_events
-         (request_id, seq, at, event, provider_id, model_id, attempt, status, status_code, reason, duration_ms, detail)
-       VALUES (?,
-              (SELECT COALESCE(MAX(seq), 0) + 1 FROM request_audit_events WHERE request_id = ?),
-              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      input.requestId,
-      input.requestId,
-      new Date().toISOString(),
-      input.event,
-      input.providerId ?? null,
-      input.modelId ?? null,
-      input.attempt ?? null,
-      input.status ?? null,
-      input.statusCode ?? null,
-      input.reason ? sanitize(input.reason) ?? null : null,
-      input.durationMs ?? null,
-      safeStringify(input.detail)
-    );
+    queueAuditEventWrite({
+      requestId: input.requestId,
+      at: new Date().toISOString(),
+      event: input.event,
+      providerId: input.providerId ?? null,
+      modelId: input.modelId ?? null,
+      attempt: input.attempt ?? null,
+      status: input.status ?? null,
+      statusCode: input.statusCode ?? null,
+      reason: input.reason ? sanitize(input.reason) ?? null : null,
+      durationMs: input.durationMs ?? null,
+      detail: safeStringify(input.detail),
+    });
     return true;
   } catch {
     return false;
   }
 }
 
+const UPDATE_AUDIT_SQL = `
+  UPDATE request_audit SET
+    finished_at = ?,
+    duration_ms = COALESCE(?, duration_ms),
+    status = ?,
+    status_code = COALESCE(?, status_code),
+    provider_id = COALESCE(?, provider_id),
+    model_id = COALESCE(?, model_id),
+    attempts = COALESCE(?, attempts),
+    prompt_tokens = COALESCE(?, prompt_tokens),
+    completion_tokens = COALESCE(?, completion_tokens),
+    total_tokens = COALESCE(?, total_tokens),
+    time_to_first_token_ms = COALESCE(?, time_to_first_token_ms),
+    error_code = COALESCE(?, error_code),
+    error_message = COALESCE(?, error_message),
+    cost_usd = COALESCE(?, cost_usd),
+    saved_cost_usd = COALESCE(?, saved_cost_usd)
+  WHERE request_id = ?
+`;
+
 export function completeRequestAudit(input: CompleteAuditInput): boolean {
   try {
-    const db = getDatabase();
-    const result = db
-      .prepare(
-        `UPDATE request_audit SET
-           finished_at = ?,
-           duration_ms = COALESCE(?, duration_ms),
-           status = ?,
-           status_code = COALESCE(?, status_code),
-           provider_id = COALESCE(?, provider_id),
-           model_id = COALESCE(?, model_id),
-           attempts = COALESCE(?, attempts),
-           prompt_tokens = COALESCE(?, prompt_tokens),
-           completion_tokens = COALESCE(?, completion_tokens),
-           total_tokens = COALESCE(?, total_tokens),
-           time_to_first_token_ms = COALESCE(?, time_to_first_token_ms),
-           error_code = COALESCE(?, error_code),
-           error_message = COALESCE(?, error_message),
-           cost_usd = COALESCE(?, cost_usd),
-           saved_cost_usd = COALESCE(?, saved_cost_usd)
-         WHERE request_id = ?`
-      )
-      .run(
-        new Date().toISOString(),
+    const finishedAt = new Date().toISOString();
+    const errorMessage = input.errorMessage ? sanitize(input.errorMessage) ?? null : null;
+    queueWrite((db) =>
+      prepared(db, UPDATE_AUDIT_SQL).run(
+        finishedAt,
         input.durationMs ?? null,
         input.status,
         input.statusCode ?? null,
@@ -274,32 +314,24 @@ export function completeRequestAudit(input: CompleteAuditInput): boolean {
         input.totalTokens ?? null,
         input.timeToFirstTokenMs ?? null,
         input.errorCode ?? null,
-        input.errorMessage ? sanitize(input.errorMessage) ?? null : null,
+        errorMessage,
         input.costUsd ?? null,
         input.savedCostUsd ?? null,
         input.requestId
-      );
-
-    db.prepare(
-      `INSERT INTO request_audit_events
-         (request_id, seq, at, event, provider_id, model_id, status, status_code, reason, duration_ms, detail)
-       VALUES (?,
-              (SELECT COALESCE(MAX(seq), 0) + 1 FROM request_audit_events WHERE request_id = ?),
-              ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
-    ).run(
-      input.requestId,
-      input.requestId,
-      new Date().toISOString(),
-      input.status === 'success' ? 'request.completed' : 'request.failed',
-      input.providerId ?? null,
-      input.modelId ?? null,
-      input.status,
-      input.statusCode ?? null,
-      input.errorCode ?? null,
-      input.durationMs ?? null
+      )
     );
-
-    return result.changes > 0;
+    queueAuditEventWrite({
+      requestId: input.requestId,
+      at: finishedAt,
+      event: input.status === 'success' ? 'request.completed' : 'request.failed',
+      providerId: input.providerId ?? null,
+      modelId: input.modelId ?? null,
+      status: input.status,
+      statusCode: input.statusCode ?? null,
+      reason: input.errorCode ?? null,
+      durationMs: input.durationMs ?? null,
+    });
+    return true;
   } catch {
     return false;
   }
@@ -376,7 +408,7 @@ function buildWhere(query: AuditQuery): { sql: string; values: Array<string | nu
 const MAX_AUDIT_PAGE_SIZE = 500;
 
 export function listRequestAudit(query: AuditQuery = {}): AuditListResult {
-  const db = getDatabase();
+  const db = readDatabase();
   const { sql, values } = buildWhere(query);
   const limit = Math.min(Math.max(query.limit ?? 50, 1), MAX_AUDIT_PAGE_SIZE);
   const offset = Math.max(query.offset ?? 0, 0);
@@ -395,7 +427,7 @@ export function listRequestAudit(query: AuditQuery = {}): AuditListResult {
 }
 
 export function getRequestAuditDetail(requestId: string): { request: RequestAuditRecord; events: RequestAuditEvent[] } | null {
-  const db = getDatabase();
+  const db = readDatabase();
   const row = db.prepare('SELECT * FROM request_audit WHERE request_id = ?').get(requestId) as
     | AuditRow
     | undefined;
@@ -461,7 +493,7 @@ function classifyCounts(row: { status: string; duration_ms: number | null }) {
 export function getAuditSummary(options: { days?: number; profileId?: string } = {}): AuditSummary {
   const days = Math.min(Math.max(options.days ?? 7, 1), 365);
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  const db = getDatabase();
+  const db = readDatabase();
   const profileId = options.profileId ?? getActiveProfileId();
   const scopeValues: string[] = [cutoff, profileId];
   const scopeSql = 'WHERE started_at >= ? AND (profile_id = ? OR profile_id IS NULL)';
@@ -600,7 +632,7 @@ export function getAuditSummary(options: { days?: number; profileId?: string } =
 /** Count of requests still marked in_progress — stale rows mean a crash mid-request. */
 export function getInFlightRequestCount(): number {
   try {
-    const db = getDatabase();
+    const db = readDatabase();
     const row = db
       .prepare("SELECT COUNT(*) as count FROM request_audit WHERE status = 'in_progress'")
       .get() as { count: number };
@@ -615,7 +647,7 @@ export function getInFlightRequestCount(): number {
  * parent request ids so the trail never outlives its request.
  */
 export function deleteOldAuditRecords(cutoffIso: string): number {
-  const db = getDatabase();
+  const db = readDatabase();
   const run = db.transaction(() => {
     db.prepare(
       `DELETE FROM request_audit_events

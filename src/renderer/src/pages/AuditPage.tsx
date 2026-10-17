@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getFreellmApi } from '../hooks/useIPC';
+import { numberFromParam, useQueryParams } from '../hooks/useQueryParam';
 import { useProfileChanges } from '../hooks/useProfiles';
 import { ErrorState, LoadingState, EmptyState } from '../components/ErrorBoundary';
 import PageHeader from '../components/PageHeader';
@@ -56,42 +57,61 @@ const SKIP_REASON_LABELS: Record<string, string> = {
   no_candidates: '没有可用候选',
 };
 
-interface Filters {
-  status: AuditStatus | '';
-  providerId: string;
-  search: string;
-  failuresOnly: boolean;
-  days: number;
+const DEFAULT_DAYS = 7;
+
+/** Only statuses this screen can render are accepted from a link; anything else means "all". */
+function statusFromParam(value: string | undefined): AuditStatus | '' {
+  return value && Object.prototype.hasOwnProperty.call(STATUS_LABELS, value)
+    ? (value as AuditStatus)
+    : '';
 }
 
-const EMPTY_FILTERS: Filters = { status: '', providerId: '', search: '', failuresOnly: false, days: 7 };
+const AUDIT_PARAMS = ['status', 'provider', 'q', 'failures', 'days', 'page', 'request'] as const;
+
+/** `page=0` is the first page, so keep it out of the link. */
+function pageParam(page: number): number | null {
+  return page > 0 ? page : null;
+}
 
 export default function AuditPage() {
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [pendingSearch, setPendingSearch] = useState('');
-  const [page, setPage] = useState(0);
+  const [params, setParams] = useQueryParams(AUDIT_PARAMS);
+
+  const status = statusFromParam(params.status);
+  const providerId = params.provider ?? '';
+  const search = params.q ?? '';
+  const failuresOnly = params.failures === '1';
+  const days = numberFromParam(params.days, DEFAULT_DAYS, 1);
+  const page = numberFromParam(params.page, 0, 0);
+  const selected = params.request;
+
+  // The draft keeps keystrokes out of the URL; Enter commits the search to it.
+  const [pendingSearch, setPendingSearch] = useState(search);
   const [result, setResult] = useState<AuditListResult | null>(null);
   const [summary, setSummary] = useState<AuditSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AuditDetailResult | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [tick, setTick] = useState(0);
 
   useProfileChanges(() => setTick((value) => value + 1));
 
+  // Keeps the input honest when the back button restores an older search.
+  useEffect(() => {
+    setPendingSearch(search);
+  }, [search]);
+
   const query = useMemo(
     () => ({
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
-      status: filters.status || undefined,
-      providerId: filters.providerId || undefined,
-      search: filters.search || undefined,
-      failuresOnly: filters.failuresOnly || undefined,
-      from: new Date(Date.now() - filters.days * 86400_000).toISOString(),
+      status: status || undefined,
+      providerId: providerId || undefined,
+      search: search || undefined,
+      failuresOnly: failuresOnly || undefined,
+      from: new Date(Date.now() - days * 86400_000).toISOString(),
     }),
-    [page, filters]
+    [page, status, providerId, search, failuresOnly, days]
   );
 
   const load = useCallback(async () => {
@@ -105,7 +125,7 @@ export default function AuditPage() {
     try {
       const [list, stats] = await Promise.all([
         api.usage.auditList(query),
-        api.usage.auditSummary(filters.days),
+        api.usage.auditSummary(days),
       ]);
       setResult(list ?? null);
       setSummary(stats ?? null);
@@ -114,7 +134,7 @@ export default function AuditPage() {
     } finally {
       setLoading(false);
     }
-  }, [query, filters.days]);
+  }, [query, days]);
 
   useEffect(() => {
     void load();
@@ -189,10 +209,9 @@ export default function AuditPage() {
             状态
             <select
               className="input-field mt-1 min-w-28"
-              value={filters.status}
+              value={status}
               onChange={(event) => {
-                setPage(0);
-                setFilters((prev) => ({ ...prev, status: event.target.value as AuditStatus | '' }));
+                setParams({ page: null, status: event.target.value || null });
               }}
             >
               <option value="">全部</option>
@@ -209,10 +228,9 @@ export default function AuditPage() {
             <input
               className="input-field mt-1 min-w-32"
               placeholder="groq"
-              value={filters.providerId}
+              value={providerId}
               onChange={(event) => {
-                setPage(0);
-                setFilters((prev) => ({ ...prev, providerId: event.target.value.trim() }));
+                setParams({ page: null, provider: event.target.value.trim() || null });
               }}
             />
           </label>
@@ -225,8 +243,7 @@ export default function AuditPage() {
               onChange={(event) => setPendingSearch(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
-                  setPage(0);
-                  setFilters((prev) => ({ ...prev, search: pendingSearch.trim() }));
+                  setParams({ page: null, q: pendingSearch.trim() || null });
                 }
               }}
               placeholder="req_m1x..."
@@ -237,10 +254,10 @@ export default function AuditPage() {
             时间窗
             <select
               className="input-field mt-1 min-w-24"
-              value={filters.days}
+              value={days}
               onChange={(event) => {
-                setFilters((prev) => ({ ...prev, days: Number(event.target.value) }));
-                setPage(0);
+                const next = Number(event.target.value);
+                setParams({ page: null, days: next === DEFAULT_DAYS ? null : next });
               }}
             >
               <option value={1}>24 小时</option>
@@ -252,10 +269,9 @@ export default function AuditPage() {
           <label className="flex items-center gap-1.5 pb-2 text-[11px] text-surface-600">
             <input
               type="checkbox"
-              checked={filters.failuresOnly}
+              checked={failuresOnly}
               onChange={(event) => {
-                setPage(0);
-                setFilters((prev) => ({ ...prev, failuresOnly: event.target.checked }));
+                setParams({ page: null, failures: event.target.checked ? '1' : null });
               }}
             />
             只看异常
@@ -266,8 +282,14 @@ export default function AuditPage() {
             className="btn-ghost text-[11px] pb-2"
             onClick={() => {
               setPendingSearch('');
-              setFilters(EMPTY_FILTERS);
-              setPage(0);
+              setParams({
+                status: null,
+                provider: null,
+                q: null,
+                failures: null,
+                days: null,
+                page: null,
+              });
             }}
           >
             重置
@@ -300,7 +322,9 @@ export default function AuditPage() {
                     key={row.requestId}
                     row={row}
                     active={selected === row.requestId}
-                    onSelect={() => setSelected(row.requestId)}
+                    onSelect={() =>
+                      setParams({ request: selected === row.requestId ? null : row.requestId })
+                    }
                   />
                 ))}
               </tbody>
@@ -312,7 +336,7 @@ export default function AuditPage() {
               type="button"
               className="btn-ghost"
               disabled={page === 0}
-              onClick={() => setPage((value) => Math.max(0, value - 1))}
+              onClick={() => setParams({ page: pageParam(Math.max(0, page - 1)) })}
             >
               上一页
             </button>
@@ -323,7 +347,7 @@ export default function AuditPage() {
               type="button"
               className="btn-ghost"
               disabled={page + 1 >= pageCount}
-              onClick={() => setPage((value) => value + 1)}
+              onClick={() => setParams({ page: pageParam(page + 1) })}
             >
               下一页
             </button>
@@ -331,7 +355,18 @@ export default function AuditPage() {
         </div>
 
         <div className="card">
-          <h3 className="text-sm font-semibold text-surface-800 mb-3">请求轨迹</h3>
+          <div className="flex items-start justify-between gap-2 mb-3">
+            <h3 className="text-sm font-semibold text-surface-800">请求轨迹</h3>
+            {selected ? (
+              <button
+                type="button"
+                className="btn-ghost text-[11px]"
+                onClick={() => setParams({ request: null })}
+              >
+                关闭
+              </button>
+            ) : null}
+          </div>
           {!selected && <EmptyState message="选择左侧任一请求，查看它完整的调度过程" />}
           {selected && detailLoading && <LoadingState />}
           {selected && !detailLoading && !detail && <EmptyState message="该请求没有轨迹数据" />}

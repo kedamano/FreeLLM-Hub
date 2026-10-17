@@ -17,72 +17,73 @@ interface ProviderAdapter {
   chat(messages, model, options?): Promise<{content, usage, finishReason}>;
   chatStream(messages, model, options?): AsyncIterable<StreamChunk>;
   validateCredential(credential?): Promise<{valid, reason?}>;
-  getUsageInfo?(): Promise<ProviderUsageInfo>;
+  checkReadiness?(): ProviderReadiness;
 }
 ```
 
 ## 开发新 Provider 步骤
 
-### 1. 创建适配器
+### 1. 在目录里加一个 seed
 
-在 `src/core/providers/<provider-name>/` 目录下创建适配器文件。
-
-如果是 OpenAI 兼容 API，继承 `OpenAICompatibleAdapter` 基类：
+内置服务商不再各自一个适配器文件：模型清单、价格、限速都写在
+`src/core/providers/catalog.ts` 的 `BUILTIN_PROVIDER_SEEDS` 里，适配器由
+`createStaticAdapter(seed, credential)`（`src/core/providers/openai-compatible/static-adapter.ts`）
+统一装配，`bootstrap.ts` 直接遍历这份目录注册。加一个 OpenAI 兼容的服务商 = 加一段数据：
 
 ```typescript
-import { OpenAICompatibleAdapter } from '../openai-compatible/adapter';
-
-export function createMyProviderAdapter(apiKey?: string): OpenAICompatibleAdapter {
-  return new OpenAICompatibleAdapter({
-    providerId: 'my-provider',
-    providerName: 'My Provider',
-    baseUrl: 'https://api.example.com/v1',
-    authType: 'api-key',
-    defaultHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-    models: [
-      {
-        id: 'model-id',
-        providerId: 'my-provider',
-        displayName: 'Human Readable Name',
-        capabilities: { supported: [...], contextWindow: 8192, ... },
-        pricing: { type: 'free', currency: 'USD', notes: '...' },
-        status: 'available',
-        discoveredAt: new Date().toISOString(),
-      },
-    ],
-  });
+{
+  id: 'my-provider',
+  name: 'My Provider',
+  baseUrl: 'https://api.example.com/v1',
+  currency: 'USD',
+  caps: ['chat', 'streaming'],          // 该服务商模型的默认能力
+  price: 'free',
+  priceNote: 'Free tier with rate limits',
+  requestsPerMinute: 30,
+  tokensPerMinute: 100000,
+  models: [
+    { id: 'model-id', name: 'Human Readable Name', context: 8192, output: 2048 },
+  ],
 }
 ```
 
-### 2. 注册表注册
+只有超出模板的行为才需要额外参数：Cloudflare 用 seed 里的 `configFields` / `requiredSettings` /
+`resolveBaseUrl` 描述按账户寻址的地址，OpenRouter 用 `headers` 追加固定请求头。
+真正不同的 API（Ollama）保留自己的适配器，但仍然进同一张注册表：`BUILT_IN_ENTRIES` 的第一项。
 
-在 `src/core/providers/index.ts` 中导出。
+### 2. 注册
 
-在 `src/main/app-lifecycle.ts` 的 `registerProviders()` 中注册。
+不需要写注册代码。数组顺序即注册顺序，也即服务商页与模型目录的展示顺序（本地服务在前）。
+`tests/unit/model-catalog.test.ts` 会断言注册出来的适配器与目录一一对应。
 
 ### 3. IPC 凭证通道
 
-凭证存储键格式：`${providerId}-key`
+凭证存储键格式：`${providerId}-key`（由 `credentialIdFor()` 生成，不要在 seed 里手写）。
 
-凭证状态由 `credentialStore.has(key)` 确定。
+凭证状态由 `credentialStore.has(key)` 确定。本地服务把 `authType` 设为 `'none'`，
+此时即使密钥库里有残留值也不会挂上凭证。
 
 ### 4. Model 能力标注规范
 
-- `supported` 数组必须准确反映模型实际能力
-- `contextWindow` 为最大上下文 token 数
+- **`caps` 是唯一一份能力清单**：`capabilities.supported` 直接取它，
+  `supportsStreaming / supportsVision / supportsFunctionCalling / supportsJsonMode` 由它派生。
+  调度器读 `supported`，界面读四个布尔，两者从此不可能再各说各话——写第二份的机会没有了。
+- 免费层没公布每分钟限额的服务商，必须同时加进 `PROVIDERS_WITHOUT_PUBLISHED_RATE_LIMITS`，
+  否则测试失败；这条清单的作用是"沉默的全局限额兜底"要有名有姓。
+- `contextWindow` 为最大上下文 token 数，`output` 若公布则必须 ≤ `context`
 - `pricing.type` 必须是以下之一：`local`、`free`、`freemium`、`paid`、`unknown`
 - `pricing.notes` 说明免费条件或限制
 
 ### 5. 测试要求
 
-新 Provider 适配器必须包含以下测试：
+`tests/unit/model-catalog.test.ts` 已经按目录逐个服务商覆盖：模型 id 不重复且不含已下架型号、
+能力清单非空且含 `chat`、`output ≤ context`、价格类型合法、布尔与 `supported` 一致、
+限额要么声明要么进例外清单、`listModels()` 端出的就是目录里的这一份。
+新 Provider 只要数据进目录就跑在这些断言上，另外仍需补：
 
-- `validateCredential` 有效性检查
-- `listModels` 返回正确格式
-- `chat` 非流式请求
-- `chatStream` 流式请求
+- `validateCredential` 有效性检查（若该服务商有不同于通用 `GET /models` 的探活方式）
+- `chat` 非流式与 `chatStream` 流式各一条（真实端点行为特殊时）
 - 错误处理（401/403/429/500）
-- 模型能力标注正确性
 
 ## 错误代码约定
 
@@ -134,8 +135,9 @@ Client Secret（机密客户端才需要）单独走加密存储，键为 `<id>-
 
 ### 4. 新增内置 OAuth 服务商
 
-在 `src/core/providers/bootstrap.ts` 的工厂表里加一个用 `OpenAICompatibleAdapter` + `authType: 'oauth'`
-的适配器，并在 `oauthConfigFields()` 里补齐该服务商的端点默认值；其余流程复用上面的装配。
+在 `src/core/providers/catalog.ts` 里加一个 seed（`authType` 留给运行期：只要
+`provider-settings:<id>` 里的 OAuth 规格合法，装配阶段就会把它翻成 `oauth`），
+并在 `oauthConfigFields()` 里补齐该服务商的端点默认值；其余流程复用上面的装配。
 
 ### 5. 测试
 

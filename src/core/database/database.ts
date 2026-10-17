@@ -26,6 +26,10 @@ export function getDatabase(): Database.Database {
 
   dbInstance = new Database(dbPath);
   dbInstance.pragma('journal_mode = WAL');
+  // WAL + NORMAL drops the per-commit fsync that dominated the gateway write path.
+  // A process crash still loses nothing; only a power loss can discard recent commits.
+  dbInstance.pragma('synchronous = NORMAL');
+  dbInstance.pragma('journal_size_limit = 67108864');
   dbInstance.pragma('foreign_keys = ON');
   dbInstance.pragma('busy_timeout = 5000');
 

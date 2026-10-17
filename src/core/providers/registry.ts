@@ -2,13 +2,16 @@ import type {
   ProviderAdapter,
   ProviderRegistry,
 } from './contracts.js';
+import { loggerFor } from '../log/logger.js';
+
+const log = loggerFor('providers');
 
 class ProviderRegistryImpl implements ProviderRegistry {
   private adapters = new Map<string, ProviderAdapter>();
 
   register(adapter: ProviderAdapter): void {
     if (this.adapters.has(adapter.providerId)) {
-      console.warn(`Provider ${adapter.providerId} already registered, replacing`);
+      log.warn({ providerId: adapter.providerId }, 'provider already registered, replacing');
     }
     this.adapters.set(adapter.providerId, adapter);
   }
@@ -23,22 +26,6 @@ class ProviderRegistryImpl implements ProviderRegistry {
 
   getAll(): ProviderAdapter[] {
     return Array.from(this.adapters.values());
-  }
-
-  async getAvailable(): Promise<ProviderAdapter[]> {
-    const results = await Promise.allSettled(
-      this.getAll().map(async (adapter) => {
-        const available = await adapter.isAvailable();
-        return available ? adapter : null;
-      })
-    );
-
-    return results
-      .filter(
-        (r): r is PromiseFulfilledResult<ProviderAdapter | null> =>
-          r.status === 'fulfilled' && r.value !== null
-      )
-      .map((r) => r.value!);
   }
 }
 

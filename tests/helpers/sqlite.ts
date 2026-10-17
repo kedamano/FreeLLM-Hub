@@ -20,7 +20,11 @@ export interface TestDatabase {
   };
   exec(sql: string): void;
   pragma(sql: string, options?: { simple?: boolean }): unknown;
-  transaction<T>(fn: () => T): () => T;
+  transaction<T>(fn: () => T): (() => T) & {
+    deferred(): T;
+    immediate(): T;
+    exclusive(): T;
+  };
   close(): void;
 }
 
@@ -92,21 +96,30 @@ function wrapNodeSqlite(raw: {
       raw.exec(`PRAGMA ${sql}`);
       return undefined;
     },
-    transaction: (fn) => () => {
-      raw.exec('BEGIN');
-      try {
-        // better-sqlite3 returns the callback's value from the wrapped transaction.
-        const result = fn();
-        raw.exec('COMMIT');
-        return result;
-      } catch (err) {
+    transaction: (fn) => {
+      const run = (begin: string): unknown => {
+        raw.exec(begin);
         try {
-          raw.exec('ROLLBACK');
-        } catch {
-          /* the transaction may already have been aborted by SQLite */
+          // better-sqlite3 returns the callback's value from the wrapped transaction.
+          const result = fn();
+          raw.exec('COMMIT');
+          return result;
+        } catch (err) {
+          try {
+            raw.exec('ROLLBACK');
+          } catch {
+            /* the transaction may already have been aborted by SQLite */
+          }
+          throw err;
         }
-        throw err;
-      }
+      };
+      // better-sqlite3 hands back a callable with the three lock modes attached.
+      const transaction = Object.assign(() => run('BEGIN'), {
+        deferred: () => run('BEGIN DEFERRED'),
+        immediate: () => run('BEGIN IMMEDIATE'),
+        exclusive: () => run('BEGIN EXCLUSIVE'),
+      });
+      return transaction;
     },
     close: () => raw.close(),
   };

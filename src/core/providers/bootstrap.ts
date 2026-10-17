@@ -1,25 +1,9 @@
 import { getProviderRegistry } from './registry.js';
-import { OpenAICompatibleAdapter } from './openai-compatible/adapter.js';
 import { getDatabase } from '../database/database.js';
-import {
-  createOllamaAdapter,
-  createLMStudioAdapter,
-  createGroqAdapter,
-  createGoogleGeminiAdapter,
-  createCloudflareAdapter,
-  createHuggingFaceAdapter,
-  createCerebrasAdapter,
-  createSiliconFlowAdapter,
-  createNvidiaAdapter,
-  createOpenRouterAdapter,
-  createModelScopeAdapter,
-  createSenseNovaAdapter,
-  createLongCatAdapter,
-  createZhipuAdapter,
-  createMoonshotAdapter,
-  createDeepSeekAdapter,
-  createMiniMaxAdapter,
-} from './index.js';
+import { loggerFor } from '../log/logger.js';
+import { createOllamaAdapter } from './local/ollama-adapter.js';
+import { createStaticAdapter } from './openai-compatible/static-adapter.js';
+import { BUILTIN_PROVIDER_SEEDS } from './catalog.js';
 import type { ProviderAdapter, ProviderRegistry } from './contracts.js';
 import {
   resolveProviderCredential,
@@ -39,6 +23,8 @@ import {
   readProfileSetting,
   writeProfileSetting,
 } from '../settings/profile-store.js';
+
+const log = loggerFor('bootstrap');
 
 /**
  * Provider pool configuration is scoped to the active configuration profile, so
@@ -98,25 +84,26 @@ export function collectSlotCredentials(store: ReadCredentialStore, providerId: s
 
 type BuiltInFactory = (credential?: string) => ProviderAdapter;
 
-const BUILT_IN_FACTORIES: Record<string, BuiltInFactory> = {
-  ollama: () => createOllamaAdapter(),
-  lmstudio: () => createLMStudioAdapter(),
-  groq: (key) => createGroqAdapter(key),
-  'google-gemini': (key) => createGoogleGeminiAdapter(key),
-  cloudflare: (key) => createCloudflareAdapter(undefined, key),
-  huggingface: (key) => createHuggingFaceAdapter(key),
-  cerebras: (key) => createCerebrasAdapter(key),
-  siliconflow: (key) => createSiliconFlowAdapter(key),
-  nvidia: (key) => createNvidiaAdapter(key),
-  openrouter: (key) => createOpenRouterAdapter(key),
-  modelscope: (key) => createModelScopeAdapter(key),
-  sensenova: (key) => createSenseNovaAdapter(key),
-  longcat: (key) => createLongCatAdapter(key),
-  zhipu: (key) => createZhipuAdapter(key),
-  moonshot: (key) => createMoonshotAdapter(key),
-  deepseek: (key) => createDeepSeekAdapter(key),
-  minimax: (key) => createMiniMaxAdapter(key),
-};
+interface BuiltInEntry {
+  providerId: string;
+  create: BuiltInFactory;
+}
+
+/**
+ * Registration is generated from the catalog: adding a provider means adding a seed, not
+ * writing another adapter file and factory entry. Ollama is the only built-in that stays
+ * hand-written — it speaks its own API and reads its model list off the local server — so it
+ * is simply the first entry of the same list. Order here is the order the UI shows.
+ */
+const BUILT_IN_ENTRIES: BuiltInEntry[] = [
+  { providerId: 'ollama', create: () => createOllamaAdapter() },
+  ...BUILTIN_PROVIDER_SEEDS.map<BuiltInEntry>((seed) => ({
+    providerId: seed.id,
+    create: (credential) => createStaticAdapter(seed, credential),
+  })),
+];
+
+export const BUILT_IN_PROVIDER_IDS: string[] = BUILT_IN_ENTRIES.map((entry) => entry.providerId);
 
 export interface RegisterAllProvidersOptions {
   settings?: PlainKeyStore;
@@ -185,16 +172,14 @@ export function registerAllProviders(
 
   const adapters: ProviderAdapter[] = [];
 
-  for (const [providerId, factory] of Object.entries(BUILT_IN_FACTORIES)) {
+  for (const { providerId, create } of BUILT_IN_ENTRIES) {
     let credential: string | undefined;
     try {
       credential = resolveProviderCredential(secrets, providerId).credential ?? undefined;
     } catch (err) {
-      console.warn(
-        `[Bootstrap] ${providerId}: 凭证读取失败 (${err instanceof Error ? err.message : String(err)})`
-      );
+      log.warn({ err, providerId }, '凭证读取失败');
     }
-    const adapter = factory(credential);
+    const adapter = create(credential);
     adapters.push(adapter);
     registry.register(adapter);
   }
@@ -209,20 +194,20 @@ export function registerAllProviders(
   registerCustomProvidersFromDb(registry, credentialStore);
 
   const settings = options.settings ?? settingsBackedStore;
-  const migrated = migrateLegacyProviderFields(secrets, settings, Object.keys(BUILT_IN_FACTORIES));
+  const migrated = migrateLegacyProviderFields(secrets, settings, BUILT_IN_PROVIDER_IDS);
   if (migrated.length > 0) {
-    console.log(`[Bootstrap] 已迁移旧版配置字段: ${migrated.join(', ')}`);
+    log.info({ keys: migrated }, '已迁移旧版配置字段');
   }
 
   const { errors } = applyProviderOverrides(adapters, settings);
-  for (const error of errors) console.warn(`[Bootstrap] ${error}`);
+  for (const error of errors) log.warn({ error }, 'provider 覆盖项未能应用');
 
   const oauthProviders = attachOAuthTokenSources(registry.getAll(), secrets, options.tokenSourceFor);
   if (oauthProviders.length > 0) {
-    console.log(`[Bootstrap] OAuth 服务商: ${oauthProviders.join(', ')}`);
+    log.info({ providers: oauthProviders }, 'OAuth 服务商');
   }
 
-  console.log(`[Providers] Registered ${registry.getAll().length} providers`);
+  log.info({ count: registry.getAll().length }, 'providers registered');
 }
 
 export const CUSTOM_PROVIDER_PREFIX = 'custom-';
@@ -250,20 +235,26 @@ function registerCustomProvidersFromDb(
     for (const row of rows) {
       if (registry.get(row.id)) continue;
       const credential = credentialStore.retrieve(`${row.id}-key`);
-      const adapter = new OpenAICompatibleAdapter({
-        providerId: row.id,
-        providerName: row.display_name,
-        baseUrl: row.base_url,
-        authType: 'api-key',
-        isBuiltIn: false,
-        credentialId: credential ? `${row.id}-key` : undefined,
-        defaultHeaders: credential ? { Authorization: `Bearer ${credential}` } : {},
-      });
+      // Same template as the built-ins: a user pool is just a provider whose catalog is empty
+      // until the first discovery, so only `isBuiltIn` and the editable base URL differ.
+      const adapter = createStaticAdapter(
+        {
+          id: row.id,
+          name: row.display_name,
+          baseUrl: row.base_url,
+          currency: 'USD',
+          caps: [],
+          price: 'unknown',
+          models: [],
+        },
+        credential ?? undefined,
+        { isBuiltIn: false }
+      );
       adapter.setEnabled(row.is_enabled === 1);
       registry.register(adapter);
     }
   } catch (err) {
-    console.warn('[Bootstrap] Failed to load custom providers:', err);
+    log.warn({ err }, 'failed to load custom providers');
   }
 }
 

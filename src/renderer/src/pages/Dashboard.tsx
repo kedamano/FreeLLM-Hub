@@ -201,7 +201,7 @@ export default function Dashboard() {
 
               {/* Quick config */}
               <div className="p-2.5 bg-primary-50/50 rounded-lg mt-2">
-                <div className="text-[10px] text-primary-600 font-medium mb-1">在 other agent 中配置</div>
+                <div className="text-[10px] text-primary-600 font-medium mb-1">在其他 Agent 中配置</div>
                 <div className="font-mono text-[11px] text-primary-700 leading-relaxed break-all">
                   OPENAI_BASE_URL={gatewayUrl}/v1
                 </div>

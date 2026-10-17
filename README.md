@@ -179,7 +179,9 @@ curl http://127.0.0.1:3001/v1/chat/completions \
 
 - **`model` 可以乱填**：留空、填 `auto` 或填一个本地没有的模型名，调度器都会从可用免费池里挑一个真正能跑的模型。
 - **`task_type`** 支持 `general` `coding` `analysis` `creative` `summarization` `classification` `extraction` `translation` `lightweight`，未提供时使用「设置」里的默认任务类型。
-- 流式请求把 `"stream": true` 加上即可，返回标准 SSE。
+- 流式请求把 `"stream": true` 加上即可，返回标准 SSE。首帧之前的失败（限流、超时、模型不可路由）
+  直接以真实状态码 + JSON 错误体返回，不会伪装成 `200`；只有首帧之后的失败才走 SSE 错误帧。
+- 每次上游尝试都有截止时间：`REQUEST_TIMEOUT_MS`（默认 60000，允许 1000 ~ 900000），超时按 `504 TIMEOUT` 回退到下一家。
 
 错误语义与 OpenAI 客户端生态对齐，便于上游直接判断是否重试：
 
@@ -247,7 +249,7 @@ src/
 ├── core/           # 核心逻辑层
 │   ├── config/     # 应用配置
 │   ├── database/   # SQLite 数据层
-│   ├── providers/  # Provider 适配器与注册表
+│   ├── providers/  # 服务商目录（声明式 seed）与注册表
 │   └── settings/   # 设置存储
 ├── scheduler/      # 智能调度器（候选过滤、评分、熔断、限流、配额）
 ├── usage/          # 调用账本、成本台账、请求审计、Token 估算、日志保留
@@ -311,7 +313,7 @@ electron-builder 解包签名工具链需要创建符号链接，普通权限的
 | [docs/api-reference.md](docs/api-reference.md) | 网关 API、Web REST、IPC 通道 |
 | [docs/scheduler.md](docs/scheduler.md) | 评分与路由、限流、配额、熔断、错误语义 |
 | [docs/security.md](docs/security.md) | 凭证存储、进程隔离、IPC 白名单 |
-| [docs/provider-development.md](docs/provider-development.md) | 如何新增一个服务商适配器 |
+| [docs/provider-development.md](docs/provider-development.md) | 如何新增一个服务商 |
 | [docs/release-checklist.md](docs/release-checklist.md) | 发布前检查与打包注意事项 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 常见问题排查 |
 

@@ -68,7 +68,6 @@ function registerAdapter(providerId: string, models: ProviderModel[], overrides:
         yield { content: 'ok', finishReason: 'stop' };
       }),
     validateCredential: vi.fn().mockResolvedValue({ valid: true }),
-    getUsageInfo: vi.fn().mockResolvedValue({ remainingTokens: 1000 }),
   };
 
   registry.register(adapter);

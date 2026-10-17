@@ -84,6 +84,8 @@
 - 基础延迟：1000ms
 - 退避乘数：2 (指数退避)
 - 最大延迟：30,000ms
+- 单次上游尝试截止时间：由网关传入的 `timeoutMs`（`REQUEST_TIMEOUT_MS`，默认 60000，
+  下限 1000 / 上限 900000），每次重试都重新计时；到点映射为 `TIMEOUT` / 504 并继续回退
 - 可重试错误码：RATE_LIMITED, TIMEOUT, SERVER_ERROR, ALL_FAILED, NETWORK_ERROR
 
 ## 错误语义

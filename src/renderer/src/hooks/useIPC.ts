@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { routeUrl } from '../../../shared/api-contract.js';
 import type {
   AuditDetailResult,
   AuditListResult,
@@ -55,6 +56,12 @@ function qs(values: Record<string, string | number | undefined>): string {
   return params.toString();
 }
 
+/** Same, but omits the `?` entirely when every value was absent. */
+function withQuery(path: string, values: Record<string, string | number | undefined>): string {
+  const query = qs(values);
+  return query ? `${path}?${query}` : path;
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getAdminToken();
   const headers: Record<string, string> = {
@@ -82,177 +89,197 @@ function postJson<T>(path: string, body?: unknown): Promise<T> {
   return http<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) });
 }
 
-const seg = (value: string): string => encodeURIComponent(value);
-
+/**
+ * Every URL here comes from `ADMIN_ROUTE_BINDINGS`, so the browser client and the IPC
+ * client cannot drift apart from the routes the server actually registers.
+ */
 function createHttpApi(): FreeLLMApi {
   return {
     providers: {
-      list: () => http<unknown[]>('/providers'),
-      get: (providerId: string) => http<unknown>(`/providers/${seg(providerId)}`),
+      list: () => http<unknown[]>(routeUrl('providers:list')),
+      get: (providerId: string) =>
+        http<unknown>(routeUrl('providers:get', { providerId })),
       test: (providerId: string) =>
-        postJson<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/test`),
+        postJson<{ success: boolean; error?: string }>(routeUrl('providers:test', { providerId })),
       setCredential: (providerId: string, credential: string) =>
-        postJson<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { credential }),
+        postJson<{ success: boolean }>(routeUrl('providers:set-credential', { providerId }), {
+          credential,
+        }),
       revealCredential: (providerId: string, index?: number) =>
         postJson<{ credential: string | null }>(
-          `/providers/${seg(providerId)}/credential/reveal`,
+          routeUrl('providers:reveal-credential', { providerId }),
           { index: index ?? 0 }
         ),
       listCredentials: (providerId: string) =>
         http<{ credentials: Array<{ index: number; keyId: string; masked: string }> }>(
-          `/providers/${seg(providerId)}/credentials`
+          routeUrl('providers:list-credentials', { providerId })
         ),
       addCredential: (providerId: string, credential: string) =>
         postJson<{
           success: boolean;
           error?: string;
           credentials?: Array<{ index: number; keyId: string; masked: string }>;
-        }>(`/providers/${seg(providerId)}/credentials`, { credential }),
+        }>(routeUrl('providers:add-credential', { providerId }), { credential }),
       removeCredentialSlot: (providerId: string, index: number) =>
         http<{
           success: boolean;
           error?: string;
           credentials?: Array<{ index: number; keyId: string; masked: string }>;
-        }>(`/providers/${seg(providerId)}/credentials/${index}`, { method: 'DELETE' }),
+        }>(routeUrl('providers:remove-credential-slot', { providerId, index }), {
+          method: 'DELETE',
+        }),
       removeCredential: (providerId: string) =>
-        http<{ success: boolean }>(`/providers/${seg(providerId)}/credential`, { method: 'DELETE' }),
+        http<{ success: boolean }>(routeUrl('providers:remove-credential', { providerId }), {
+          method: 'DELETE',
+        }),
       toggle: (providerId: string, enabled: boolean) =>
-        postJson<{ success: boolean }>(`/providers/${seg(providerId)}/toggle`, { enabled }),
+        postJson<{ success: boolean }>(routeUrl('providers:toggle', { providerId }), { enabled }),
       updateBaseUrl: (providerId: string, baseUrl: string) =>
-        http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/base-url`, {
+        http<{ success: boolean; error?: string }>(routeUrl('providers:update-baseurl', { providerId }), {
           method: 'PUT',
           body: JSON.stringify({ baseUrl }),
         }),
       updateConfig: (providerId: string, input: { baseUrl?: string; settings?: Record<string, string> }) =>
-        http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/config`, {
+        http<{ success: boolean; error?: string }>(routeUrl('providers:update-config', { providerId }), {
           method: 'PUT',
           body: JSON.stringify(input),
         }),
       setQuota: (providerId: string, quota: { maxRequestsPerDay?: number; maxTokensPerDay?: number }) =>
-        http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}/quota`, {
+        http<{ success: boolean; error?: string }>(routeUrl('providers:set-quota', { providerId }), {
           method: 'PUT',
           body: JSON.stringify(quota),
         }),
       discoverModels: (providerId: string) =>
         postJson<{ success: boolean; models?: unknown[]; error?: string }>(
-          `/providers/${seg(providerId)}/discover-models`
+          routeUrl('providers:discover-models', { providerId })
         ),
       getModels: (providerId: string) =>
-        http<unknown[]>(`/providers/${seg(providerId)}/models`),
+        http<unknown[]>(routeUrl('providers:get-models', { providerId })),
       createCustom: (input: {
         name: string;
         baseUrl: string;
         apiKey?: string;
         authType?: 'api-key' | 'oauth';
         oauth?: Record<string, unknown>;
-      }) =>
-        postJson<{ success: boolean; providerId?: string; error?: string }>('/providers/custom', input),
+      }) => postJson<{ success: boolean; providerId?: string; error?: string }>(routeUrl('providers:create-custom'), input),
       deleteCustom: (providerId: string) =>
-        http<{ success: boolean; error?: string }>(`/providers/${seg(providerId)}`, { method: 'DELETE' }),
+        http<{ success: boolean; error?: string }>(routeUrl('providers:delete-custom', { providerId }), {
+          method: 'DELETE',
+        }),
       configureOAuth: (providerId: string, input: Record<string, unknown>) =>
         postJson<{ success: boolean; error?: string; config?: unknown }>(
-          `/providers/${seg(providerId)}/oauth`,
+          routeUrl('providers:configure-oauth', { providerId }),
           input
         ),
     },
     models: {
-      list: () => http<unknown[]>('/models'),
+      list: () => http<unknown[]>(routeUrl('models:list')),
       get: (providerId: string, modelId: string) =>
-        http<unknown>(`/models/${seg(providerId)}/${seg(modelId)}`),
-      discover: () => postJson<unknown[]>('/models/discover'),
-      refresh: () => postJson<unknown[]>('/models/refresh'),
+        http<unknown>(routeUrl('models:get', { providerId, modelId })),
+      discover: () => postJson<unknown[]>(routeUrl('models:discover')),
+      refresh: () => postJson<unknown[]>(routeUrl('models:refresh')),
     },
     scheduler: {
-      status: () => http<unknown>('/scheduler/status'),
+      status: () => http<unknown>(routeUrl('scheduler:status')),
       resetCircuit: (providerId: string) =>
-        postJson<{ success: boolean }>('/scheduler/reset-circuit', { providerId }),
-      resetAllCircuits: () => postJson<{ success: boolean }>('/scheduler/reset-all-circuits'),
+        postJson<{ success: boolean }>(routeUrl('scheduler:reset-circuit'), { providerId }),
+      resetAllCircuits: () => postJson<{ success: boolean }>(routeUrl('scheduler:reset-all-circuits')),
     },
     settings: {
-      get: (key: string) => http<string | null>(`/settings/${seg(key)}`),
+      get: (key: string) => http<string | null>(routeUrl('settings:get', { key })),
       set: (key: string, value: string) =>
-        http<{ success: boolean }>(`/settings/${seg(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
-      getAll: () => http<Record<string, string>>('/settings'),
+        http<{ success: boolean }>(routeUrl('settings:set', { key }), {
+          method: 'PUT',
+          body: JSON.stringify({ value }),
+        }),
+      getAll: () => http<Record<string, string>>(routeUrl('settings:get-all')),
     },
     usage: {
       dashboard: (profileId?: string) =>
-        http<unknown>(`/usage/summary${profileId ? `?profileId=${seg(profileId)}` : ''}`),
+        http<unknown>(withQuery(routeUrl('usage:dashboard'), { profileId })),
       providerStats: (providerId: string, profileId?: string) =>
-        http<unknown>(
-          `/usage/providers/${seg(providerId)}${profileId ? `?profileId=${seg(profileId)}` : ''}`
-        ),
+        http<unknown>(withQuery(routeUrl('usage:provider-stats', { providerId }), { profileId })),
       dailyStats: (days?: number, profileId?: string) =>
-        http<unknown>(
-          `/usage/timeseries?${qs({ days, profileId })}`
-        ),
+        http<unknown>(withQuery(routeUrl('usage:daily-stats'), { days, profileId })),
       recentCalls: (limit?: number) =>
-        http<unknown[]>(`/usage/recent${limit !== undefined ? `?limit=${limit}` : ''}`),
+        http<unknown[]>(withQuery(routeUrl('usage:recent-calls'), { limit })),
       costSummary: (days?: number, profileId?: string) =>
-        http<CostSummary>(`/usage/cost?${qs({ days, profileId })}`),
+        http<CostSummary>(withQuery(routeUrl('usage:cost-summary'), { days, profileId })),
       quotaUsage: (profileId?: string) =>
-        http<ProviderQuotaUsage[]>(`/usage/quota?${qs({ profileId })}`),
+        http<ProviderQuotaUsage[]>(withQuery(routeUrl('usage:quota-usage'), { profileId })),
       dailyByProvider: (days?: number, profileId?: string) =>
-        http<ProviderDailyPoint[]>(`/usage/timeseries-by-provider?${qs({ days, profileId })}`),
-      auditList: (query?: AuditQuery) => http<AuditListResult>('/audit/list', {
-        method: 'POST',
-        body: JSON.stringify(query ?? {}),
-      }),
+        http<ProviderDailyPoint[]>(
+          withQuery(routeUrl('usage:daily-by-provider'), { days, profileId })
+        ),
+      auditList: (query?: AuditQuery) =>
+        http<AuditListResult>(routeUrl('usage:audit-list'), {
+          method: 'POST',
+          body: JSON.stringify(query ?? {}),
+        }),
       auditDetail: (requestId: string) =>
-        http<AuditDetailResult | null>(`/audit/requests/${seg(requestId)}`),
+        http<AuditDetailResult | null>(routeUrl('usage:audit-detail', { requestId })),
       auditSummary: (days?: number, profileId?: string) =>
-        http<AuditSummary>(`/audit/summary?${qs({ days, profileId })}`),
+        http<AuditSummary>(withQuery(routeUrl('usage:audit-summary'), { days, profileId })),
     },
     profiles: {
-      list: () => http<ProfileView[]>('/profiles'),
-      active: () => http<ProfileView>('/profiles/active'),
-      get: (profileId: string) => http<ProfileView | null>(`/profiles/${seg(profileId)}`),
+      list: () => http<ProfileView[]>(routeUrl('profiles:list')),
+      active: () => http<ProfileView>(routeUrl('profiles:active')),
+      get: (profileId: string) =>
+        http<ProfileView | null>(routeUrl('profiles:get', { profileId })),
       create: (input: { name: string; description?: string; copyFrom?: string }) =>
-        postJson<ProfileActionResult>('/profiles', input),
+        postJson<ProfileActionResult>(routeUrl('profiles:create'), input),
       update: (profileId: string, patch: { name?: string; description?: string }) =>
-        http<ProfileActionResult>(`/profiles/${seg(profileId)}`, {
+        http<ProfileActionResult>(routeUrl('profiles:update', { profileId }), {
           method: 'PUT',
           body: JSON.stringify(patch),
         }),
       remove: (profileId: string) =>
-        http<{ ok: boolean; error?: string }>(`/profiles/${seg(profileId)}`, { method: 'DELETE' }),
+        http<{ ok: boolean; error?: string }>(routeUrl('profiles:delete', { profileId }), {
+          method: 'DELETE',
+        }),
       switch: (profileId: string) =>
-        postJson<ProfileActionResult>(`/profiles/${seg(profileId)}/activate`),
+        postJson<ProfileActionResult>(routeUrl('profiles:switch', { profileId })),
       duplicate: (from: string, to: string) =>
-        postJson<{ ok: boolean; copied?: number; error?: string }>('/profiles/duplicate', {
+        postJson<{ ok: boolean; copied?: number; error?: string }>(routeUrl('profiles:duplicate'), {
           from,
           to,
         }),
       resetPool: (profileId: string) =>
-        postJson<{ ok: boolean; cleared?: number }>(`/profiles/${seg(profileId)}/reset-pool`),
+        postJson<{ ok: boolean; cleared?: number }>(routeUrl('profiles:reset-pool', { profileId })),
     },
     oauth: {
       start: (providerId: string) =>
         postJson<{ ok: boolean; flow?: OAuthFlowState; error?: string }>(
-          `/oauth/${seg(providerId)}/authorize`
+          routeUrl('oauth:start', { providerId })
         ),
       status: (state: string) =>
         http<{ flow: OAuthFlowState | null; credential: OAuthCredentialState | null }>(
-          `/oauth/flows/${seg(state)}`
+          routeUrl('oauth:status', { state })
         ),
       cancel: (state: string) =>
-        postJson<{ ok: boolean; error?: string }>(`/oauth/flows/${seg(state)}/cancel`),
+        postJson<{ ok: boolean; error?: string }>(routeUrl('oauth:cancel', { state })),
       refresh: (providerId: string) =>
         postJson<{ ok: boolean; credential?: OAuthCredentialState; error?: string }>(
-          `/oauth/${seg(providerId)}/refresh`
+          routeUrl('oauth:refresh', { providerId })
         ),
       unlink: (providerId: string) =>
-        http<{ ok: boolean; error?: string }>(`/oauth/${seg(providerId)}`, { method: 'DELETE' }),
+        http<{ ok: boolean; error?: string }>(routeUrl('oauth:unlink', { providerId }), {
+          method: 'DELETE',
+        }),
     },
     gateway: {
-      status: () => http<unknown>('/gateway/status'),
-      getToken: () => http<string>('/gateway/token'),
-      generateToken: () => postJson<string>('/gateway/generate-token'),
+      status: () => http<unknown>(routeUrl('gateway:getStatus')),
+      getToken: () => http<string>(routeUrl('gateway:getToken')),
+      generateToken: () => postJson<string>(routeUrl('gateway:generateToken')),
       updateConfig: (config: { host?: string; port?: number; authEnabled?: boolean }) =>
-        http<unknown>('/gateway/config', { method: 'PUT', body: JSON.stringify(config) }),
+        http<unknown>(routeUrl('gateway:updateConfig'), {
+          method: 'PUT',
+          body: JSON.stringify(config),
+        }),
     },
     app: {
-      version: () => http<string>('/app/version'),
-      dataPath: () => http<string>('/app/data-path'),
+      version: () => http<string>(routeUrl('app:version')),
+      dataPath: () => http<string>(routeUrl('app:data-path')),
     },
   };
 }

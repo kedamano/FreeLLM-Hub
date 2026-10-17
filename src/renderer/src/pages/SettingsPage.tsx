@@ -187,7 +187,7 @@ export default function SettingsPage() {
                 {copied ? '已复制' : '复制 Base URL'}
               </button>
             </div>
-            <p className="text-[11px] text-surface-400 mt-1">在 other agent 中设置 OPENAI_BASE_URL 为此值 + /v1</p>
+            <p className="text-[11px] text-surface-400 mt-1">在其他 Agent 中设置 OPENAI_BASE_URL 为此值 + /v1</p>
           </div>
 
           {/* Auth Toggle */}

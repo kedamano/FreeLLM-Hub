@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useIPC, getFreellmApi } from '../hooks/useIPC';
+import { useNumberQueryParam } from '../hooks/useQueryParam';
 import { useProfileChanges } from '../hooks/useProfiles';
 import { unwrapIpc, unwrapIpcList } from '../lib/ipc-result';
 import { LoadingState, ErrorState, EmptyState } from '../components/ErrorBoundary';
@@ -50,7 +51,7 @@ const WINDOWS = [
 ];
 
 export default function UsagePage() {
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useNumberQueryParam('days', 30, 1);
   const [reloadKey, setReloadKey] = useState(0);
   useProfileChanges(() => setReloadKey((value) => value + 1));
 

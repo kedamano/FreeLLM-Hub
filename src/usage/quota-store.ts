@@ -1,6 +1,39 @@
-import { getDatabase } from '../core/database/database.js';
-import type { PersistedQuotaState, QuotaPersistence } from '../scheduler/quota-manager.js';
+import type {
+  PersistedQuotaState,
+  QuotaDelta,
+  QuotaPersistence,
+} from '../scheduler/quota-manager.js';
+import { prepared } from '../core/database/statement-cache.js';
+import { queueWrite, readDatabase } from './write-buffer.js';
 import { DEFAULT_PROFILE_ID, getActiveProfileId } from '../core/settings/profile-store.js';
+
+const ADD_QUOTA_SQL = `
+  INSERT INTO quota_tracking
+    (profile_id, provider_id, model_id, period_start, period_end, request_count, token_count, cost_usd)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(profile_id, provider_id, model_id, period_start) DO UPDATE SET
+    period_end = excluded.period_end,
+    request_count = quota_tracking.request_count + excluded.request_count,
+    token_count = quota_tracking.token_count + excluded.token_count,
+    cost_usd = quota_tracking.cost_usd + excluded.cost_usd
+`;
+
+const LOAD_QUOTA_SQL = `
+  SELECT provider_id, model_id, period_start, period_end, request_count, token_count, cost_usd
+  FROM quota_tracking
+  WHERE period_end > ? AND profile_id = ?
+`;
+
+const SAVE_QUOTA_SQL = `
+  INSERT INTO quota_tracking
+    (profile_id, provider_id, model_id, period_start, period_end, request_count, token_count, cost_usd)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(profile_id, provider_id, model_id, period_start) DO UPDATE SET
+    period_end = excluded.period_end,
+    request_count = excluded.request_count,
+    token_count = excluded.token_count,
+    cost_usd = excluded.cost_usd
+`;
 
 /**
  * SQLite-backed daily quota usage. Provider-level buckets store an empty
@@ -11,6 +44,11 @@ import { DEFAULT_PROFILE_ID, getActiveProfileId } from '../core/settings/profile
  * must not share one daily counter, otherwise switching pools would silently inherit
  * the other project's consumption. `profileId` is resolved lazily on every call so a
  * profile switch takes effect without rebuilding the manager.
+ *
+ * `add()` writes increments so a second process on the same database file (the desktop
+ * window plus a `--web` run on other ports) accumulates into the shared window instead
+ * of each one overwriting it with its own snapshot. SQLite's own concurrency handling
+ * (WAL plus `busy_timeout`) covers the write contention.
  */
 export function createQuotaPersistence(
   profileId: string | (() => string) = () => getActiveProfileId()
@@ -22,13 +60,8 @@ export function createQuotaPersistence(
 
   return {
     load(): PersistedQuotaState[] {
-      const rows = getDatabase()
-        .prepare(
-          `SELECT provider_id, model_id, period_start, period_end, request_count, token_count, cost_usd
-           FROM quota_tracking
-           WHERE period_end > ? AND profile_id = ?`
-        )
-        .all(new Date().toISOString(), resolve()) as Array<{
+      const db = readDatabase();
+      const rows = prepared(db, LOAD_QUOTA_SQL).all(new Date().toISOString(), resolve()) as Array<{
         provider_id: string;
         model_id: string | null;
         period_start: string;
@@ -49,20 +82,27 @@ export function createQuotaPersistence(
       }));
     },
 
-    save(state: PersistedQuotaState): void {
-      getDatabase()
-        .prepare(
-          `INSERT INTO quota_tracking
-             (profile_id, provider_id, model_id, period_start, period_end, request_count, token_count, cost_usd)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(profile_id, provider_id, model_id, period_start) DO UPDATE SET
-             period_end = excluded.period_end,
-             request_count = excluded.request_count,
-             token_count = excluded.token_count,
-             cost_usd = excluded.cost_usd`
+    add(delta: QuotaDelta): void {
+      const profileId = resolve();
+      queueWrite((db) =>
+        prepared(db, ADD_QUOTA_SQL).run(
+          profileId,
+          delta.providerId,
+          delta.modelId ?? '',
+          delta.periodStart,
+          delta.periodEnd,
+          delta.requests,
+          delta.tokens,
+          delta.costUsd
         )
-        .run(
-          resolve(),
+      );
+    },
+
+    save(state: PersistedQuotaState): void {
+      const profileId = resolve();
+      queueWrite((db) =>
+        prepared(db, SAVE_QUOTA_SQL).run(
+          profileId,
           state.providerId,
           state.modelId ?? '',
           state.periodStart,
@@ -70,7 +110,8 @@ export function createQuotaPersistence(
           state.requestCount,
           state.tokenCount,
           state.costUsd ?? 0
-        );
+        )
+      );
     },
   };
 }
@@ -86,7 +127,7 @@ export function listQuotaWindows(profileId?: string): Array<{
   tokenCount: number;
   costUsd: number;
 }> {
-  const db = getDatabase();
+  const db = readDatabase();
   const rows = (
     profileId
       ? db.prepare('SELECT * FROM quota_tracking WHERE profile_id = ? ORDER BY period_start DESC').all(profileId)

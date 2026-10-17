@@ -1,7 +1,11 @@
-import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type FastifyRequest,
+  type FastifyReply,
+} from 'fastify';
 import cors from '@fastify/cors';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { resolve as resolvePath } from 'node:path';
 import { Scheduler } from '../../scheduler/scheduler.js';
 import { recordCall } from '../../usage/usage-recorder.js';
 import {
@@ -31,14 +35,14 @@ import {
 } from '../../shared/errors/index.js';
 import { TASK_TYPES, type TaskType } from '../../shared/types/index.js';
 import { redactSecrets } from '../security/secret-redaction.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from '../../core/providers/request-errors.js';
 import { getAppConfig } from '../../core/config/app-config.js';
 import { readSetting } from '../../core/settings/settings-store.js';
 import { registerCommonMiddleware } from './middleware.js';
+import { getAppLogger } from '../../core/log/logger.js';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const LOCAL_ORIGIN = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i;
-// `silent` is a valid pino level and is what the tests use to avoid touching disk.
-const LOG_LEVELS = new Set(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']);
 
 /** Inbound `X-Request-Id` is honoured but never trusted: length and charset are pinned. */
 function resolveRequestId(headerValue: unknown): string {
@@ -49,12 +53,17 @@ function resolveRequestId(headerValue: unknown): string {
   return generateRequestId();
 }
 
-function resolveLogLevel(): string {
+/**
+ * The scheduler builds a per-attempt `AbortSignal` from this value. Adapters apply the same
+ * default internally, so wiring it here is what makes the deadline configurable and visible
+ * to the gateway's own error mapping (a 504 rather than an opaque network failure).
+ */
+function resolveRequestTimeoutMs(): number {
   try {
-    const configured = getAppConfig().logLevel;
-    return LOG_LEVELS.has(configured) ? configured : 'info';
+    const configured = getAppConfig().requestTimeoutMs;
+    return typeof configured === 'number' && configured > 0 ? configured : DEFAULT_REQUEST_TIMEOUT_MS;
   } catch {
-    return 'info';
+    return DEFAULT_REQUEST_TIMEOUT_MS;
   }
 }
 
@@ -107,17 +116,18 @@ export class GatewayServer {
       throw new Error(this.lastError);
     }
 
+    // Annotated with the logger type Fastify stores on `request.log`: passing the pino instance
+    // directly makes Fastify infer its narrower `Logger<never, boolean>` shape, which no longer
+    // matches the `this.app` field and breaks every route registration.
+    const loggerInstance: FastifyBaseLogger = getAppLogger();
+
     this.app = Fastify({
-      // One id per request, generated before any hook runs, so the pino lines in
-      // gateway.log and the SQLite audit trail can finally be joined together.
+      // One id per request, generated before any hook runs, so the pino lines in the rolled
+      // log and the SQLite audit trail can finally be joined together.
       genReqId: (request) => resolveRequestId(request.headers['x-request-id']),
-      logger: {
-        level: resolveLogLevel(),
-        transport: {
-          target: 'pino-pretty',
-          options: { colorize: false, destination: resolveGatewayLogFile() },
-        },
-      },
+      // The process-wide instance, not a gateway-only one: two pino loggers writing the same
+      // rolled file would disagree about where the rotation boundary is.
+      loggerInstance,
       bodyLimit: 10 * 1024 * 1024,
     });
 
@@ -494,7 +504,10 @@ export class GatewayServer {
     attemptCount: () => number
   ) {
     try {
-      const result = await this.scheduler.execute(request, { trace });
+      const result = await this.scheduler.execute(request, {
+        trace,
+        timeoutMs: resolveRequestTimeoutMs(),
+      });
 
       recordCall({
         requestId: request.requestId,
@@ -607,21 +620,33 @@ export class GatewayServer {
     reply.hijack();
     const raw = reply.raw;
 
-    raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Request-Id': request.requestId,
-    });
+    // The 200 SSE head is committed only once there is actually something to stream.
+    // Before that moment a provider failure can still be answered as a normal JSON
+    // error with its real status; after it, 200 is already on the wire and the error
+    // can only ride the stream as a data frame.
+    let headSent = false;
+    const ensureHead = () => {
+      if (headSent) return;
+      headSent = true;
+      raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Request-Id': request.requestId,
+      });
 
-    recordAuditEvent({
-      requestId: request.requestId,
-      event: 'response.head',
-      statusCode: 200,
-      detail: { stream: true },
-    });
+      recordAuditEvent({
+        requestId: request.requestId,
+        event: 'response.head',
+        statusCode: 200,
+        detail: { stream: true },
+      });
+    };
 
-    const stream = this.scheduler.executeStream(request, { trace });
+    const stream = this.scheduler.executeStream(request, {
+      trace,
+      timeoutMs: resolveRequestTimeoutMs(),
+    });
     let clientGone = false;
     let closed = false;
 
@@ -642,9 +667,19 @@ export class GatewayServer {
 
     const write = (data: string): Promise<void> =>
       new Promise<void>((resolveWrite) => {
-        if (clientGone || raw.writableEnded) return resolveWrite();
-        if (raw.write(data)) resolveWrite();
-        else raw.once('drain', () => resolveWrite());
+        if (clientGone || raw.writableEnded || raw.destroyed) return resolveWrite();
+        const settle = () => {
+          raw.removeListener('drain', settle);
+          raw.removeListener('close', settle);
+          raw.removeListener('error', settle);
+          resolveWrite();
+        };
+        raw.once('drain', settle);
+        // A disconnected client never fires `drain`, so without these the loop would
+        // await forever and `completeRequestAudit` would leave the row in_progress.
+        raw.once('close', settle);
+        raw.once('error', settle);
+        if (raw.write(data)) settle();
       });
 
     (async () => {
@@ -695,6 +730,7 @@ export class GatewayServer {
               ],
             });
 
+            ensureHead();
             await write(`data: ${sseData}\n\n`);
           }
         }
@@ -721,6 +757,7 @@ export class GatewayServer {
             },
           });
 
+          ensureHead();
           await write(`data: ${finalChunk}\n\n`);
           await write('data: [DONE]\n\n');
         }
@@ -772,8 +809,8 @@ export class GatewayServer {
           completionTokens: usage.completionTokens,
           totalTokens: usage.totalTokens,
           errorMessage: message,
-          // The SSE head was already sent, so the client-visible HTTP status stays
-          // 200 while the audit row records the real upstream outcome.
+          // Once the SSE head is out the client-visible status stays 200; the audit
+          // row still records the real upstream outcome.
           statusCode: desc.status,
           stream: true,
           attempt: attempts,
@@ -796,18 +833,23 @@ export class GatewayServer {
         });
 
         if (!clientGone) {
-          const errorData = JSON.stringify({
-            error: {
-              message,
-              type: desc.type,
-              code: desc.code,
-            },
-          });
-          await write(`data: ${errorData}\n\n`);
+          const errorBody = { error: { message, type: desc.type, code: desc.code } };
+          if (headSent) {
+            await write(`data: ${JSON.stringify(errorBody)}\n\n`);
+          } else {
+            if (desc.retryAfterSeconds) {
+              raw.setHeader('Retry-After', String(desc.retryAfterSeconds));
+            }
+            raw.writeHead(desc.status, {
+              'Content-Type': 'application/json',
+              'X-Request-Id': request.requestId,
+            });
+            raw.end(JSON.stringify(errorBody));
+          }
         }
       } finally {
         closeStream();
-        if (!raw.writableEnded) raw.end();
+        if (!raw.writableEnded && !raw.destroyed) raw.end();
       }
     })();
 
@@ -874,14 +916,6 @@ function auditStatusForError(desc: ErrorDescription): AuditStatus {
   if (desc.code === 'QUOTA_EXCEEDED') return 'quota_exceeded';
   if (desc.code === 'TIMEOUT') return 'timeout';
   return 'error';
-}
-
-function resolveGatewayLogFile(): string {
-  try {
-    return resolvePath(getAppConfig().logDir, 'gateway.log');
-  } catch {
-    return resolvePath('logs', 'gateway.log');
-  }
 }
 
 function parseTaskType(value: unknown): TaskType | undefined {

@@ -3,6 +3,7 @@ import { WindowManager } from './window-manager.js';
 import { TrayManager } from './tray-manager.js';
 import { GatewayManager } from './gateway/gateway-manager.js';
 import { closeDatabase, getDatabase } from '../core/database/database.js';
+import { flushQueuedWrites } from '../usage/write-buffer.js';
 import { getCredentialStore } from './security/credential-store.js';
 import { registerAllIpcHandlers } from './ipc/index.js';
 import { registerIpcHandler } from './ipc/handle.js';
@@ -154,6 +155,8 @@ export class AppLifecycle {
       this.disposeLogRetention();
       await this.gatewayManager.stop();
 
+      // Drain the write buffer before the connection goes away.
+      flushQueuedWrites();
       this.trayManager.destroy();
       this.windowManager.destroyMainWindow();
       closeDatabase();

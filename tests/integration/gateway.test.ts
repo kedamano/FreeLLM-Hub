@@ -41,7 +41,6 @@ vi.mock('../../src/core/providers/registry.js', () => ({
       chat: mockChat,
       chatStream: vi.fn(),
     }),
-    getAvailable: () => Promise.resolve([]),
     register: vi.fn(),
     unregister: vi.fn(),
   }),
@@ -49,6 +48,15 @@ vi.mock('../../src/core/providers/registry.js', () => ({
 
 vi.mock('../../src/usage/usage-recorder.js', () => ({
   recordCall: mockRecordCall,
+}));
+
+// This spec runs without a database; the audit trail itself is specified in
+// gateway-audit.test.ts.
+vi.mock('../../src/usage/audit-recorder.js', () => ({
+  auditRejectedRequest: vi.fn(() => true),
+  beginRequestAudit: vi.fn(() => true),
+  completeRequestAudit: vi.fn(() => true),
+  recordAuditEvent: vi.fn(() => true),
 }));
 
 import { GatewayServer, generateGatewayToken, safeTokenEquals } from '../../src/main/gateway/server';

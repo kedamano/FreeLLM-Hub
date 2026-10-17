@@ -15,6 +15,7 @@ import type {
   ProviderModel,
 } from '../../shared/types/index.js';
 import { getProviderRegistry } from '../../core/providers/index.js';
+import { buildCapabilities } from '../../shared/utils/capabilities.js';
 import { applyEnabled, applyCredential, hotSwap, ENABLED_KEY_PREFIX, makeCustomProviderId, settingsBackedStore } from '../../core/providers/bootstrap.js';
 import { updateProviderConfig, persistProviderConfig } from '../../core/providers/provider-state.js';
 import type { ProviderConfig } from '../../shared/types/index.js';
@@ -534,6 +535,22 @@ export async function discoverProviderModels(providerId: string): Promise<{
   if (!adapter) return { success: false, error: 'Provider not found', models: [] };
   try {
     const models = await adapter.listModels();
+    if (models.length === 0) {
+      // Adapters swallow transport errors and return an empty catalogue, so "no models"
+      // would otherwise be indistinguishable from "could not reach the service".
+      const probe = await adapter.validateCredential().catch((err) => ({
+        valid: false,
+        reason: err instanceof Error ? err.message : String(err),
+      }));
+      if (!probe.valid) {
+        return {
+          success: false,
+          providerId,
+          error: redactSecrets(probe.reason || '无法连接到服务商'),
+          models: [],
+        };
+      }
+    }
     try {
       persistDiscoveredModels(providerId, models);
     } catch (err) {
@@ -605,14 +622,7 @@ function persistDiscoveredModels(providerId: string, models: ProviderModel[]): v
   tx();
 }
 
-const EMPTY_CAPABILITIES: ModelCapabilities = {
-  supported: [],
-  contextWindow: 0,
-  supportsStreaming: false,
-  supportsVision: false,
-  supportsFunctionCalling: false,
-  supportsJsonMode: false,
-};
+const EMPTY_CAPABILITIES = buildCapabilities([], 0);
 
 export function getPersistedProviderModels(providerId: string): ProviderModel[] {
   const db = getDatabase();

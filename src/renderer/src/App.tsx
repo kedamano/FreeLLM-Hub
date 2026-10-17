@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import ProvidersPage from './pages/ProvidersPage';
@@ -8,14 +9,27 @@ import AuditPage from './pages/AuditPage';
 import ProfilesPage from './pages/ProfilesPage';
 import SettingsPage from './pages/SettingsPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import type { Page } from './lib/nav';
+import { pageFromPath, pathForPage } from './lib/routes';
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('dashboard');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const currentPage = pageFromPath(location.pathname);
+
+  // An unknown screen name must not silently render the dashboard behind its own URL.
+  useEffect(() => {
+    const canonical = pathForPage(currentPage);
+    if (location.pathname !== canonical) {
+      navigate(canonical, { replace: true });
+    }
+  }, [currentPage, location.pathname, navigate]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-surface-50/50">
-      <Sidebar currentPage={currentPage} onNavigate={setCurrentPage} />
+      <Sidebar
+        currentPage={currentPage}
+        onNavigate={(page) => navigate(pathForPage(page))}
+      />
 
       <main className="flex-1 min-w-0 overflow-y-auto p-6 2xl:p-8">
         <ErrorBoundary

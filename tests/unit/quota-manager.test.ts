@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { QuotaManager, type PersistedQuotaState } from '../../src/scheduler/quota-manager';
+
+// Persistence failures warn through the structured logger, not console.
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock('../../src/core/log/logger', () => ({
+  loggerFor: () => ({ warn: logWarn, info: logWarn, error: logWarn, debug: logWarn }),
+}));
+import {
+  QuotaManager,
+  type PersistedQuotaState,
+  type QuotaDelta,
+} from '../../src/scheduler/quota-manager';
 
 describe('QuotaManager', () => {
   let manager: QuotaManager;
@@ -148,11 +158,33 @@ describe('QuotaManager', () => {
       for (const row of initial) {
         rows.set(`${row.providerId}|${row.modelId ?? ''}|${row.periodStart}`, row);
       }
+      const keyOf = (providerId: string, modelId?: string, periodStart?: string) =>
+        `${providerId}|${modelId ?? ''}|${periodStart}`;
       return {
         rows,
         load: vi.fn(() => Array.from(rows.values())),
         save: vi.fn((state: PersistedQuotaState) => {
-          rows.set(`${state.providerId}|${state.modelId ?? ''}|${state.periodStart}`, state);
+          rows.set(keyOf(state.providerId, state.modelId, state.periodStart), state);
+        }),
+        // Mirrors the SQLite upsert: the window accumulates instead of being replaced.
+        add: vi.fn((delta: QuotaDelta) => {
+          const key = keyOf(delta.providerId, delta.modelId, delta.periodStart);
+          const current = rows.get(key) ?? {
+            providerId: delta.providerId,
+            modelId: delta.modelId,
+            requestCount: 0,
+            tokenCount: 0,
+            costUsd: 0,
+            periodStart: delta.periodStart,
+            periodEnd: delta.periodEnd,
+          };
+          rows.set(key, {
+            ...current,
+            periodEnd: delta.periodEnd,
+            requestCount: current.requestCount + delta.requests,
+            tokenCount: current.tokenCount + delta.tokens,
+            costUsd: (current.costUsd ?? 0) + delta.costUsd,
+          });
         }),
       };
     }
@@ -196,15 +228,69 @@ describe('QuotaManager', () => {
       expect(saved.tokenCount).toBe(120);
     });
 
+    it('accumulates when two managers share one database, instead of last write winning', () => {
+      // The desktop window and a `--web` run can point at the same file. Each keeps its
+      // own in-memory counter, so the stored window has to be a sum, not a snapshot.
+      // Each manager stamps its 24h window with the clock it reads at `record()` time, so
+      // the two would land in different buckets if the run straddled local midnight.
+      vi.useFakeTimers({ now: new Date('2026-06-15T12:00:00').getTime() });
+      try {
+        const persistence = fakePersistence();
+        const first = new QuotaManager();
+        const second = new QuotaManager();
+        first.setPersistence(persistence);
+        second.setPersistence(persistence);
+        first.hydrate();
+        second.hydrate();
+
+        first.record('groq', 1, 100, 'llama-3.1-8b-instant', 0.01);
+        second.record('groq', 1, 150, 'llama-3.1-8b-instant', 0.02);
+
+        const periodStart = first.getUsage('groq').periodStart;
+        const providerBucket = persistence.rows.get(`groq||${periodStart}`)!;
+        const modelBucket = persistence.rows.get(`groq|llama-3.1-8b-instant|${periodStart}`)!;
+
+        expect(providerBucket.requestCount).toBe(2);
+        expect(providerBucket.tokenCount).toBe(250);
+        expect(providerBucket.costUsd).toBeCloseTo(0.03);
+        expect(modelBucket.requestCount).toBe(2);
+        expect(modelBucket.tokenCount).toBe(250);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('sends only the delta to persistence, not the running total', () => {
+      const persistence = fakePersistence();
+      manager.setPersistence(persistence);
+
+      manager.record('groq', 1, 100);
+      manager.record('groq', 1, 100);
+
+      expect(persistence.add.mock.calls.map((call) => call[0].requests)).toEqual([1, 1]);
+      expect(persistence.add.mock.calls.map((call) => call[0].tokens)).toEqual([100, 100]);
+      expect(persistence.save).not.toHaveBeenCalled();
+    });
+
     it('never lets a persistence failure break accounting', () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      manager.setPersistence({ load: () => [], save: () => { throw new Error('SQLITE_BUSY'); } });
+      logWarn.mockClear();
+      manager.setPersistence({
+        load: () => [],
+        add: () => {
+          throw new Error('SQLITE_BUSY');
+        },
+        save: () => {
+          throw new Error('SQLITE_BUSY');
+        },
+      });
       manager.setConfig({ providerId: 'groq', maxRequestsPerDay: 10 });
 
       expect(() => manager.record('groq', 1, 100)).not.toThrow();
       expect(manager.getUsage('groq').requestCount).toBe(1);
-      expect(warn).toHaveBeenCalledWith('[Quota] 用量持久化失败:', 'SQLITE_BUSY');
-      warn.mockRestore();
+      expect(logWarn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.objectContaining({ message: 'SQLITE_BUSY' }) }),
+        '用量持久化失败'
+      );
     });
   });
 });

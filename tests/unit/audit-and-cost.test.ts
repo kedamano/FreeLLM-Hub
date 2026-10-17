@@ -32,6 +32,7 @@ import {
 } from '../../src/usage/statistics';
 import { purgeOldLogs, purgeAuditAndLogs } from '../../src/usage/log-retention';
 import { clearPricingCache } from '../../src/usage/cost-model';
+import { clearQueuedWrites, flushQueuedWrites } from '../../src/usage/write-buffer';
 import { invalidateActiveProfileCache } from '../../src/core/settings/profile-store';
 
 function seedModels() {
@@ -56,6 +57,8 @@ function seedModels() {
 }
 
 beforeEach(async () => {
+  // Each case gets a fresh database, so anything still queued belongs to the previous one.
+  clearQueuedWrites();
   holder.db = (await openTestDatabase()).db;
   holder.db.pragma('foreign_keys = ON');
   // The runner is typed for better-sqlite3; the specs may use the node:sqlite shim.
@@ -153,6 +156,7 @@ describe('gateway request audit', () => {
       errorCode: 'BAD_REQUEST',
       errorMessage: 'upstream rejected: Authorization: Bearer sk-abcdefghijklmnop',
     });
+    flushQueuedWrites();
     const raw = holder.db
       .prepare('SELECT error_message FROM request_audit WHERE request_id = ?')
       .get('req-secret') as { error_message: string };
@@ -214,6 +218,7 @@ describe('gateway request audit', () => {
   it('retention sweeps audit rows alongside call logs', () => {
     beginRequestAudit({ requestId: 'r', route: '/v1/chat/completions' });
     completeRequestAudit({ requestId: 'r', status: 'success' });
+    flushQueuedWrites();
     holder.db.prepare("UPDATE request_audit SET started_at = '2020-01-01T00:00:00.000Z'").run();
     holder.db.prepare("UPDATE call_logs SET timestamp = '2020-01-01T00:00:00.000Z'").run();
     recordCall({
@@ -225,6 +230,7 @@ describe('gateway request audit', () => {
       promptTokens: 1,
       completionTokens: 1,
     });
+    flushQueuedWrites();
     holder.db.prepare("UPDATE call_logs SET timestamp = '2020-01-01T00:00:00.000Z' WHERE request_id = 'call-old'").run();
 
     const removed = purgeAuditAndLogs(Date.now(), 30);
@@ -249,6 +255,7 @@ describe('cost ledger and quota ceilings', () => {
 
   it('prices a free call at zero and records the benchmark saving', () => {
     insertCall();
+    flushQueuedWrites();
     const [row] = holder.db
       .prepare('SELECT cost_usd, reference_cost_usd, saved_cost_usd, pricing_type, total_tokens, profile_id FROM call_logs')
       .all() as Array<{
@@ -310,6 +317,7 @@ describe('cost ledger and quota ceilings', () => {
     // UTC+8 clock already reads the 17th: the buckets and the window must agree.
     const boundary = Date.parse('2026-10-16T23:30:00.000Z');
     insertCall({ requestId: 'boundary-1' });
+    flushQueuedWrites();
     holder.db
       .prepare('UPDATE call_logs SET timestamp = ? WHERE request_id = ?')
       .run(new Date(boundary).toISOString(), 'boundary-1');
@@ -444,8 +452,10 @@ describe('cost ledger and quota ceilings', () => {
 
   it('purgeOldLogs only touches call logs, leaving the audit trail to its own sweep', () => {
     insertCall();
+    flushQueuedWrites();
     holder.db.prepare("UPDATE call_logs SET timestamp = '2020-01-01T00:00:00.000Z'").run();
     beginRequestAudit({ requestId: 'keep-me', route: '/v1/chat/completions' });
+    flushQueuedWrites();
     holder.db.prepare("UPDATE request_audit SET started_at = '2020-01-01T00:00:00.000Z'").run();
 
     expect(purgeOldLogs(Date.now(), 30)).toBe(1);

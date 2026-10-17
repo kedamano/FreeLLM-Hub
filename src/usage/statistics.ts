@@ -1,4 +1,4 @@
-import { getDatabase } from '../core/database/database.js';
+import { readDatabase } from './write-buffer.js';
 import { mapCallLogRow, type CallLogRow } from './usage-recorder.js';
 import { getActiveProfileId, profileKeyStore } from '../core/settings/profile-store.js';
 import { readQuota, type QuotaInput } from '../scheduler/quota-settings.js';
@@ -39,7 +39,7 @@ function scopeSql(extra: string[] = []): string {
 }
 
 export function getDashboardStats(profileId: string = getActiveProfileId()): DashboardStats {
-  const db = getDatabase();
+  const db = readDatabase();
 
   const totalsRow = db
     .prepare(
@@ -122,7 +122,7 @@ export function getProviderHealth(
   limit: number = 200,
   profileId: string = getActiveProfileId()
 ): ProviderHealth[] {
-  const db = getDatabase();
+  const db = readDatabase();
   const rows = db
     .prepare(
       `SELECT provider_id,
@@ -150,7 +150,7 @@ export function getProviderStatistics(
   providerId: ProviderId,
   profileId: string = getActiveProfileId()
 ): ProviderUsageStat {
-  const db = getDatabase();
+  const db = readDatabase();
   const row = db
     .prepare(
       `SELECT COUNT(*) as total,
@@ -189,7 +189,7 @@ export function getDailyStats(days: number = 7, profileId: string = getActivePro
   tokens: number;
   successRate: number;
 }> {
-  const db = getDatabase();
+  const db = readDatabase();
   // call_logs.timestamp stores ISO-8601 strings; comparing them against
   // datetime('now') output ('YYYY-MM-DD HH:MM:SS') mis-orders the boundary day.
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -228,7 +228,7 @@ export function getCostSummary(
   // Injectable clock so the UTC day-boundary behaviour is testable rather than
   // dependent on when the suite happens to run.
   const now = options.now ?? Date.now();
-  const db = getDatabase();
+  const db = readDatabase();
   const cutoff = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
   const where = scopeSql(['timestamp >= ?', PROFILE_MATCH]);
 
@@ -410,7 +410,7 @@ export function getProviderQuotaUsage(
   profileId: string = getActiveProfileId(),
   providerIds?: string[]
 ): ProviderQuotaUsage[] {
-  const db = getDatabase();
+  const db = readDatabase();
   const store = profileKeyStore(profileId);
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
@@ -508,7 +508,7 @@ export function getDailyStatsByProvider(
   days: number = 14,
   profileId: string = getActiveProfileId()
 ): ProviderDailyPoint[] {
-  const db = getDatabase();
+  const db = readDatabase();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const rows = db
     .prepare(

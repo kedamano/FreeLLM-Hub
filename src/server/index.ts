@@ -4,6 +4,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getAppConfig } from '../core/config/app-config.js';
 import { getDatabase, closeDatabase } from '../core/database/database.js';
+import { flushQueuedWrites } from '../usage/write-buffer.js';
 import { getCredentialStore } from '../main/security/credential-store.js';
 import { getProviderRegistry } from '../core/providers/index.js';
 import { registerAllProviders, applyPersistedProviderEnabledFromSettings } from '../core/providers/bootstrap.js';
@@ -125,6 +126,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Web
     disposeLogRetention();
     await app.close().catch(() => undefined);
     await gateway.stop().catch(() => undefined);
+    flushQueuedWrites();
     closeDatabase();
     console.log('[Web] Shutdown complete');
   };

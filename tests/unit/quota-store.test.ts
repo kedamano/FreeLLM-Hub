@@ -9,6 +9,7 @@ vi.mock('../../src/core/database/database', () => ({
 }));
 
 import { createQuotaPersistence } from '../../src/usage/quota-store';
+import { clearQueuedWrites, flushQueuedWrites } from '../../src/usage/write-buffer';
 import { invalidateActiveProfileCache } from '../../src/core/settings/profile-store';
 
 function iso(offsetMs: number): string {
@@ -16,6 +17,8 @@ function iso(offsetMs: number): string {
 }
 
 beforeEach(async () => {
+  // Each case gets a fresh database, so anything still queued belongs to the previous one.
+  clearQueuedWrites();
   // Build the schema from the real migrations instead of a copied DDL string, so a
   // change to `quota_tracking` (profile_id and cost_usd landed in v4/v5) cannot drift
   // away from what this spec exercises.
@@ -107,6 +110,45 @@ describe('sqlite quota persistence', () => {
     ]);
   });
 
+  it('accumulates increments into the open window', () => {
+    const persistence = createQuotaPersistence('default');
+    const periodStart = iso(-3600_000);
+    const periodEnd = iso(3600_000);
+    const bucket = {
+      providerId: 'groq' as const,
+      modelId: undefined,
+      periodStart,
+      periodEnd,
+    };
+
+    persistence.add({ ...bucket, requests: 1, tokens: 100, costUsd: 0.01 });
+    persistence.add({ ...bucket, requests: 1, tokens: 250, costUsd: 0.02 });
+
+    const loaded = persistence.load();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].requestCount).toBe(2);
+    expect(loaded[0].tokenCount).toBe(350);
+    expect(loaded[0].costUsd).toBeCloseTo(0.03);
+  });
+
+  it('sums the writes of two managers bound to the same database file', () => {
+    // Stand-in for the desktop window and a `--web` process sharing `.web-data`:
+    // neither may publish its own snapshot over the other's usage.
+    const periodStart = iso(-3600_000);
+    const periodEnd = iso(3600_000);
+    const first = createQuotaPersistence('default');
+    const second = createQuotaPersistence('default');
+
+    first.add({ providerId: 'openrouter', modelId: 'llama-3.3', periodStart, periodEnd, requests: 3, tokens: 900, costUsd: 0.4 });
+    second.add({ providerId: 'openrouter', modelId: 'llama-3.3', periodStart, periodEnd, requests: 2, tokens: 400, costUsd: 0.1 });
+
+    const loaded = first.load();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].requestCount).toBe(5);
+    expect(loaded[0].tokenCount).toBe(1300);
+    expect(loaded[0].costUsd).toBeCloseTo(0.5);
+  });
+
   it('resolves the profile lazily so a mid-session switch reads the right counters', () => {
     let active = 'work';
     const persistence = createQuotaPersistence(() => active);
@@ -132,6 +174,7 @@ describe('sqlite quota persistence', () => {
       periodStart: iso(-3600_000),
       periodEnd: iso(3600_000),
     });
+    flushQueuedWrites();
     const row = holder.db.prepare('SELECT profile_id FROM quota_tracking').get() as {
       profile_id: string;
     };

@@ -1,6 +1,9 @@
 import { deleteOldLogs } from './usage-recorder.js';
 import { deleteOldAuditRecords } from './audit-recorder.js';
 import { readSetting } from '../core/settings/settings-store.js';
+import { loggerFor } from '../core/log/logger.js';
+
+const log = loggerFor('usage');
 
 export const LOG_RETENTION_SETTING_KEY = 'log_retention_days';
 export const DEFAULT_LOG_RETENTION_DAYS = 30;
@@ -50,12 +53,12 @@ export function startLogRetentionSchedule(
     try {
       const removed = purgeAuditAndLogs();
       if (removed.callLogs > 0 || removed.auditRequests > 0) {
-        console.log(
-          `[Usage] 已清理 ${removed.callLogs} 条过期调用记录、${removed.auditRequests} 条请求审计`
+        log.info(
+          `已清理 ${removed.callLogs} 条过期调用记录、${removed.auditRequests} 条请求审计`
         );
       }
     } catch (err) {
-      console.warn('[Usage] 调用记录清理失败:', err instanceof Error ? err.message : err);
+      log.warn({ err }, '调用记录清理失败');
     }
   };
 

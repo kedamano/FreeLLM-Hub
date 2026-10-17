@@ -5,7 +5,6 @@ import type {
   GatewayUsage,
   GatewayToolCall,
   GatewayToolCallDelta,
-  ModelCapability,
   ProviderReadiness,
 } from '../../shared/types/index.js';
 
@@ -68,8 +67,6 @@ export interface ProviderAdapter {
 
   validateCredential(credential?: string): Promise<{ valid: boolean; reason?: string }>;
 
-  getUsageInfo?(): Promise<ProviderUsageInfo>;
-
   /** Whether the provider can serve requests right now (key + required fields present). */
   checkReadiness?(): ProviderReadiness;
 
@@ -98,20 +95,11 @@ export interface ChatOptions {
   signal?: AbortSignal;
 }
 
-export interface ProviderUsageInfo {
-  remainingRequests?: number;
-  remainingTokens?: number;
-  resetTime?: string;
-  quotaUsed?: number;
-  quotaTotal?: number;
-}
-
 export interface ProviderRegistry {
   register(adapter: ProviderAdapter): void;
   unregister(providerId: string): void;
   get(providerId: string): ProviderAdapter | undefined;
   getAll(): ProviderAdapter[];
-  getAvailable(): Promise<ProviderAdapter[]>;
 }
 
 export type ProviderFactory = (credential?: string) => ProviderAdapter;

@@ -1,16 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useIPC, getFreellmApi } from '../hooks/useIPC';
+import { useQueryParam } from '../hooks/useQueryParam';
 import { unwrapIpcList } from '../lib/ipc-result';
 import { LoadingState, ErrorState, EmptyState } from '../components/ErrorBoundary';
-
-interface ModelCapability {
-  supported: string[];
-  contextWindow: number;
-  supportsStreaming: boolean;
-  supportsVision: boolean;
-  supportsFunctionCalling: boolean;
-  supportsJsonMode: boolean;
-}
+import type { ModelCapabilities } from '../../../shared/types/index.js';
 
 interface ModelPricing {
   type: string;
@@ -24,230 +17,9 @@ interface ModelInfo {
   providerName?: string;
   displayName: string;
   description?: string;
-  capabilities: ModelCapability;
+  capabilities: ModelCapabilities;
   pricing: ModelPricing;
   status: string;
-}
-
-// ─── Mock fallback ───────────────────────────────────────────────────
-
-function getMockModels(): ModelInfo[] {
-  return [
-    {
-      id: 'llama-3.3-70b-versatile',
-      providerId: 'groq',
-      providerName: 'Groq',
-      displayName: 'Llama 3.3 70B Versatile',
-      description: 'Meta Llama 3.3 70B 参数，高能力推理',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming', 'json-mode'],
-        contextWindow: 131072,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: true,
-        supportsJsonMode: true,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: 'Free tier with rate limits' },
-      status: 'available',
-    },
-    {
-      id: 'llama-3.1-8b-instant',
-      providerId: 'groq',
-      providerName: 'Groq',
-      displayName: 'Llama 3.1 8B Instant',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 131072,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: true,
-        supportsJsonMode: true,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: 'Free tier: 30 RPM' },
-      status: 'available',
-    },
-    {
-      id: 'mixtral-8x7b-32768',
-      providerId: 'groq',
-      providerName: 'Groq',
-      displayName: 'Mixtral 8x7B',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 32768,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: 'Free tier with rate limits' },
-      status: 'available',
-    },
-    {
-      id: 'gemma-7b-it',
-      providerId: 'groq',
-      providerName: 'Groq',
-      displayName: 'Gemma 7B IT',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 8192,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: 'Free tier with rate limits' },
-      status: 'available',
-    },
-    {
-      id: 'gemini-2.0-flash',
-      providerId: 'google-gemini',
-      providerName: 'Google Gemini',
-      displayName: 'Gemini 2.0 Flash',
-      description: 'Google 轻量快速模型，支持视觉',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming', 'vision', 'function-calling', 'json-mode'],
-        contextWindow: 1048576,
-        supportsStreaming: true,
-        supportsVision: true,
-        supportsFunctionCalling: true,
-        supportsJsonMode: true,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: 'Free tier: 15 RPM, 1M TPM' },
-      status: 'available',
-    },
-    {
-      id: 'gemini-2.5-pro',
-      providerId: 'google-gemini',
-      providerName: 'Google Gemini',
-      displayName: 'Gemini 2.5 Pro',
-      description: 'Google 最强推理模型',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming', 'vision', 'function-calling', 'json-mode'],
-        contextWindow: 1048576,
-        supportsStreaming: true,
-        supportsVision: true,
-        supportsFunctionCalling: true,
-        supportsJsonMode: true,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: 'Free tier: 5 RPM' },
-      status: 'available',
-    },
-    {
-      id: 'gemini-2.0-flash-lite',
-      providerId: 'google-gemini',
-      providerName: 'Google Gemini',
-      displayName: 'Gemini 2.0 Flash Lite',
-      description: '更低延迟，成本更优',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming', 'function-calling'],
-        contextWindow: 1048576,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: true,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'freemium', currency: 'USD', notes: 'Free / Paid' },
-      status: 'available',
-    },
-    {
-      id: '@cf/meta/llama-3.1-8b-instruct',
-      providerId: 'cloudflare',
-      providerName: 'Cloudflare AI',
-      displayName: 'Llama 3.1 8B Instruct',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 131072,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: '10K neurons/day' },
-      status: 'available',
-    },
-    {
-      id: '@cf/meta/llama-3.2-3b-instruct',
-      providerId: 'cloudflare',
-      providerName: 'Cloudflare AI',
-      displayName: 'Llama 3.2 3B Instruct',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 131072,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: '10K neurons/day' },
-      status: 'available',
-    },
-    {
-      id: '@cf/mistral/mistral-7b-instruct',
-      providerId: 'cloudflare',
-      providerName: 'Cloudflare AI',
-      displayName: 'Mistral 7B Instruct',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 8192,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: '10K neurons/day' },
-      status: 'available',
-    },
-    {
-      id: '@cf/google/gemma-7b-it',
-      providerId: 'cloudflare',
-      providerName: 'Cloudflare AI',
-      displayName: 'Gemma 7B IT (Cloudflare)',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 8192,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'free', currency: 'USD', notes: '10K neurons/day' },
-      status: 'available',
-    },
-    {
-      id: 'local-model',
-      providerId: 'lmstudio',
-      providerName: 'LM Studio',
-      displayName: 'LM Studio 本地模型',
-      description: '通过 LM Studio 在本地运行的模型',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 8192,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'local', currency: 'USD', notes: '8K 本地免费推理' },
-      status: 'available',
-    },
-    {
-      id: 'local-model',
-      providerId: 'ollama',
-      providerName: 'Ollama',
-      displayName: 'Ollama 本地模型',
-      description: '通过 Ollama 在本地运行的模型',
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 8192,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'local', currency: 'USD', notes: '本地免费推理' },
-      status: 'available',
-    },
-  ];
 }
 
 // ─── Group models by provider ────────────────────────────────────────
@@ -271,7 +43,8 @@ function groupModels(models: ModelInfo[]): Array<{
 // ─── Component ───────────────────────────────────────────────────────
 
 export default function ModelsPage() {
-  const [query, setQuery] = useState('');
+  const [rawQuery, setQuery] = useQueryParam('q');
+  const query = rawQuery ?? '';
 
   const {
     data: modelsData,
@@ -280,7 +53,7 @@ export default function ModelsPage() {
     refetch,
   } = useIPC<ModelInfo[]>(async () => {
     const api = getFreellmApi();
-    if (!api) return import.meta.env.DEV ? getMockModels() : [];
+    if (!api) return [];
     return unwrapIpcList<ModelInfo>(await api.models.list());
   });
 

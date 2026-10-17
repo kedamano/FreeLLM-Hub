@@ -2,7 +2,6 @@ import type {
   ProviderAdapter,
   ChatOptions,
   StreamChunk,
-  ProviderUsageInfo,
   ProviderConfig,
   ProviderModel,
   GatewayMessage,
@@ -11,6 +10,7 @@ import type {
 } from '../contracts.js';
 import type { AuthType, ProviderConfigField, ProviderReadiness } from '../../../shared/types/index.js';
 import { estimateTokenCount } from '../../../shared/utils/index.js';
+import { buildCapabilities, GENERIC_CHAT_CAPS } from '../../../shared/utils/capabilities.js';
 import { ProviderError } from '../../../shared/errors/index.js';
 import { credentialKeyFor } from '../credential-keys.js';
 import {
@@ -570,10 +570,6 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     }
   }
 
-  async getUsageInfo(): Promise<ProviderUsageInfo> {
-    return {};
-  }
-
   private isKeyRetryable(err: ProviderError): boolean {
     return (err.code === 'RATE_LIMITED' || err.code === 'AUTH_FAILED') && this.credentials.length > 1;
   }
@@ -664,14 +660,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       id: modelId,
       providerId: this.providerId,
       displayName: modelId,
-      capabilities: {
-        supported: ['chat', 'completion', 'streaming'],
-        contextWindow: 8192,
-        supportsStreaming: true,
-        supportsVision: false,
-        supportsFunctionCalling: false,
-        supportsJsonMode: false,
-      },
+      capabilities: buildCapabilities(GENERIC_CHAT_CAPS, 8192),
       pricing: { type: 'free', currency: 'USD' },
       status: 'available',
       discoveredAt: new Date().toISOString(),

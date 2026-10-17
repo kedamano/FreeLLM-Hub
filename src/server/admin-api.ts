@@ -233,6 +233,10 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
   app.get('/api/profiles', async () => profileService.listProfileViews());
   app.get('/api/profiles/active', async () => profileService.activeProfileView());
 
+  app.get<{ Params: { id: string } }>('/api/profiles/:id', async (request, reply) =>
+    sendValue(reply, profileService.getProfileView(request.params.id))
+  );
+
   app.post<{ Body: { name?: string; description?: string; copyFrom?: string } }>(
     '/api/profiles',
     async (request) => profileService.createProfile(request.body ?? {})

@@ -20,13 +20,19 @@ vi.mock('../../src/core/providers/registry.js', () => ({
   getProviderRegistry: () => ({
     getAll: () => [],
     get: () => undefined,
-    getAvailable: () => Promise.resolve([]),
     register: vi.fn(),
     unregister: vi.fn(),
   }),
 }));
 
 vi.mock('../../src/usage/usage-recorder.js', () => ({ recordCall: mockRecordCall }));
+// No database in this spec; audit writes are specified in gateway-audit.test.ts.
+vi.mock('../../src/usage/audit-recorder.js', () => ({
+  auditRejectedRequest: vi.fn(() => true),
+  beginRequestAudit: vi.fn(() => true),
+  completeRequestAudit: vi.fn(() => true),
+  recordAuditEvent: vi.fn(() => true),
+}));
 
 import { GatewayServer } from '../../src/main/gateway/server';
 

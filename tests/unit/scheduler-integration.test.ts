@@ -59,7 +59,6 @@ function createMockAdapter(overrides: Partial<ProviderAdapter> = {}): ProviderAd
       yield { content: 'stream!', finishReason: 'stop' };
     }),
     validateCredential: vi.fn().mockResolvedValue({ valid: true }),
-    getUsageInfo: vi.fn().mockResolvedValue({ remainingTokens: 1000 }),
     ...overrides,
   };
 }

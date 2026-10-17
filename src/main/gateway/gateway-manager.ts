@@ -1,4 +1,5 @@
 import { GatewayServer, generateGatewayToken, safeTokenEquals } from './server.js';
+import { loggerFor } from '../../core/log/logger.js';
 import type { Scheduler } from '../../scheduler/scheduler.js';
 import { getDatabase } from '../../core/database/database.js';
 import { getCredentialStore } from '../security/credential-store.js';
@@ -17,6 +18,8 @@ const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
   port: 0,
   authEnabled: true,
 };
+
+const log = loggerFor('gateway');
 
 const GATEWAY_CONFIG_KEY = 'gateway_config';
 const GATEWAY_TOKEN_KEY = 'gateway_token';
@@ -54,7 +57,7 @@ export class GatewayManager {
       });
       const { port } = await this.gatewayServer.start();
       this.gatewayStartError = null;
-      console.log(`[Gateway] Listening on http://${this.gatewayConfig.host}:${port}`);
+      log.info(`Listening on http://${this.gatewayConfig.host}:${port}`);
 
       if (this.gatewayConfig.port === 0) {
         this.gatewayConfig.port = port;
@@ -64,7 +67,7 @@ export class GatewayManager {
     } catch (err) {
       this.gatewayServer = null;
       this.gatewayStartError = err instanceof Error ? err.message : String(err);
-      console.error('[Gateway] Failed to start:', this.gatewayStartError);
+      log.error({ err }, 'Gateway failed to start');
       return { ok: false, error: this.gatewayStartError };
     }
   }
@@ -75,7 +78,9 @@ export class GatewayManager {
 
   async stop(): Promise<void> {
     if (this.gatewayServer) {
-      await this.gatewayServer.stop().catch((err) => console.error('[Gateway] Failed to stop:', err));
+      await this.gatewayServer
+        .stop()
+        .catch((err) => log.error({ err }, 'Gateway failed to stop'));
       this.gatewayServer = null;
     }
   }
@@ -132,13 +137,13 @@ export class GatewayManager {
         try {
           store.store(GATEWAY_CREDENTIAL_ID, token);
         } catch {
-          console.error('[Gateway] Failed to migrate token to secure store');
+          log.error('Failed to migrate gateway token to the secure store');
         }
         deleteSetting(GATEWAY_TOKEN_KEY);
         return token;
       }
     } catch (err) {
-      console.error('[Gateway] Unable to read token securely:', err);
+      log.error({ err }, 'Unable to read gateway token securely');
     }
     return '';
   }
@@ -150,11 +155,14 @@ export class GatewayManager {
         try {
           getCredentialStore().store(GATEWAY_CREDENTIAL_ID, this.gatewayToken);
         } catch (err) {
-          console.error('[Gateway] Secure storage unavailable; token kept in memory only:', err);
+          log.error(
+            { err },
+            'Secure storage unavailable; gateway token kept in memory only'
+          );
         }
       }
     } catch (err) {
-      console.error('[Gateway] Failed to save config:', err);
+      log.error({ err }, 'Failed to save gateway config');
     }
   }
 
@@ -193,7 +201,9 @@ export class GatewayManager {
     this.saveGatewayConfig();
     if (this.gatewayServer) {
       const restartError = await this.restart();
-      if (restartError) console.error('[Gateway] Restart after token rotation failed:', restartError);
+      if (restartError) {
+        log.error({ restartError }, 'Gateway restart after token rotation failed');
+      }
     }
     return this.gatewayToken;
   }

@@ -1,4 +1,7 @@
 import type { ProviderId } from '../shared/types/index.js';
+import { loggerFor } from '../core/log/logger.js';
+
+const log = loggerFor('quota');
 
 interface QuotaState {
   providerId: ProviderId;
@@ -28,12 +31,30 @@ export interface PersistedQuotaState {
   periodEnd: string;
 }
 
+/** One completed call, expressed as an increment rather than a snapshot. */
+export interface QuotaDelta {
+  providerId: ProviderId;
+  modelId?: string;
+  requests: number;
+  tokens: number;
+  costUsd: number;
+  periodStart: string;
+  periodEnd: string;
+}
+
 /**
  * Optional write-through port so daily usage survives a restart. Without it the
  * manager stays purely in memory.
  */
 export interface QuotaPersistence {
   load(): PersistedQuotaState[];
+  /**
+   * Add to the open window. Increments — not absolute values — are what let a second
+   * process sharing this database contribute instead of overwriting the first one's
+   * totals with its own (stale) snapshot.
+   */
+  add(delta: QuotaDelta): void;
+  /** Absolute write, used only by explicit resets where overwriting is the whole point. */
   save(state: PersistedQuotaState): void;
 }
 
@@ -129,7 +150,7 @@ export class QuotaManager {
     state.requestCount += requests;
     state.tokenCount += tokens;
     state.costUsd += costUsd;
-    this.persist(state);
+    this.persistDelta(state, requests, tokens, costUsd);
 
     // ...and always keep the provider bucket in sync, because that is the scope
     // a daily quota is normally configured against.
@@ -138,7 +159,7 @@ export class QuotaManager {
       providerState.requestCount += requests;
       providerState.tokenCount += tokens;
       providerState.costUsd += costUsd;
-      this.persist(providerState);
+      this.persistDelta(providerState, requests, tokens, costUsd);
     }
   }
 
@@ -200,6 +221,29 @@ export class QuotaManager {
     return this.configs.get(providerId);
   }
 
+  private persistDelta(
+    state: QuotaState,
+    requests: number,
+    tokens: number,
+    costUsd: number
+  ): void {
+    if (!this.persistence) return;
+    try {
+      this.persistence.add({
+        providerId: state.providerId,
+        modelId: state.modelId,
+        requests,
+        tokens,
+        costUsd,
+        periodStart: state.periodStart,
+        periodEnd: state.periodEnd,
+      });
+    } catch (err) {
+      // Usage accounting must never take a completed request down with it.
+      log.warn({ err }, '用量持久化失败');
+    }
+  }
+
   private persist(state: QuotaState): void {
     if (!this.persistence) return;
     try {
@@ -214,7 +258,7 @@ export class QuotaManager {
       });
     } catch (err) {
       // Usage accounting must never take a completed request down with it.
-      console.warn('[Quota] 用量持久化失败:', err instanceof Error ? err.message : err);
+      log.warn({ err }, '用量持久化失败');
     }
   }
 

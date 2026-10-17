@@ -1,8 +1,9 @@
-import { getDatabase } from '../core/database/database.js';
+import { prepared } from '../core/database/statement-cache.js';
 import type { CallLog, ModelPricingType, ProviderId, TaskType } from '../shared/types/index.js';
 import { generateId } from '../shared/utils/index.js';
 import { quoteCallCost } from './cost-model.js';
 import { getActiveProfileId } from '../core/settings/profile-store.js';
+import { queueWrite, readDatabase } from './write-buffer.js';
 
 export interface CallRecord {
   requestId: string;
@@ -37,7 +38,6 @@ const INSERT_CALL_LOG_SQL = `
 `;
 
 export function recordCall(record: CallRecord): void {
-  const db = getDatabase();
   const totalTokens =
     record.totalTokens ?? record.promptTokens + record.completionTokens;
   const cost =
@@ -71,28 +71,30 @@ export function recordCall(record: CallRecord): void {
     currency: cost.currency,
   };
 
-  db.prepare(INSERT_CALL_LOG_SQL).run(
-    log.id,
-    log.requestId,
-    log.timestamp,
-    log.providerId,
-    log.modelId,
-    log.taskType || null,
-    log.status,
-    log.durationMs,
-    log.promptTokens,
-    log.completionTokens,
-    log.errorMessage || null,
-    log.profileId ?? null,
-    log.statusCode ?? null,
-    log.stream ? 1 : 0,
-    log.totalTokens ?? 0,
-    log.attempt ?? 1,
-    log.costUsd ?? 0,
-    cost.referenceCostUsd ?? 0,
-    log.savedCostUsd ?? 0,
-    log.pricingType ?? null,
-    log.currency ?? 'USD'
+  queueWrite((db) =>
+    prepared(db, INSERT_CALL_LOG_SQL).run(
+      log.id,
+      log.requestId,
+      log.timestamp,
+      log.providerId,
+      log.modelId,
+      log.taskType || null,
+      log.status,
+      log.durationMs,
+      log.promptTokens,
+      log.completionTokens,
+      log.errorMessage || null,
+      log.profileId ?? null,
+      log.statusCode ?? null,
+      log.stream ? 1 : 0,
+      log.totalTokens ?? 0,
+      log.attempt ?? 1,
+      log.costUsd ?? 0,
+      cost.referenceCostUsd ?? 0,
+      log.savedCostUsd ?? 0,
+      log.pricingType ?? null,
+      log.currency ?? 'USD'
+    )
   );
 }
 
@@ -149,14 +151,17 @@ export function mapCallLogRow(row: CallLogRow): CallLog {
 }
 
 export function getRecentCalls(limit: number = 100): CallLog[] {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT * FROM call_logs ORDER BY timestamp DESC LIMIT ?');
+  const db = readDatabase();
+  const stmt = prepared(db, 'SELECT * FROM call_logs ORDER BY timestamp DESC LIMIT ?');
   return (stmt.all(limit) as CallLogRow[]).map(mapCallLogRow);
 }
 
 export function getCallsByProvider(providerId: ProviderId, limit: number = 100): CallLog[] {
-  const db = getDatabase();
-  const stmt = db.prepare('SELECT * FROM call_logs WHERE provider_id = ? ORDER BY timestamp DESC LIMIT ?');
+  const db = readDatabase();
+  const stmt = prepared(
+    db,
+    'SELECT * FROM call_logs WHERE provider_id = ? ORDER BY timestamp DESC LIMIT ?'
+  );
   return (stmt.all(providerId, limit) as CallLogRow[]).map(mapCallLogRow);
 }
 
@@ -176,7 +181,7 @@ export interface CallLogQuery {
 }
 
 export function queryCallLogs(query: CallLogQuery = {}): { total: number; items: CallLog[] } {
-  const db = getDatabase();
+  const db = readDatabase();
   const clauses: string[] = [];
   const values: Array<string | number> = [];
 
@@ -206,18 +211,19 @@ export function queryCallLogs(query: CallLogQuery = {}): { total: number; items:
   const offset = Math.max(query.offset ?? 0, 0);
 
   const total = (
-    db.prepare(`SELECT COUNT(*) as count FROM call_logs${where}`).get(...values) as { count: number }
+    prepared(db, `SELECT COUNT(*) as count FROM call_logs${where}`).get(...values) as { count: number }
   ).count;
-  const rows = db
-    .prepare(`SELECT * FROM call_logs${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`)
-    .all(...values, limit, offset) as CallLogRow[];
+  const rows = prepared(
+    db,
+    `SELECT * FROM call_logs${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+  ).all(...values, limit, offset) as CallLogRow[];
 
   return { total, items: rows.map(mapCallLogRow) };
 }
 
 export function deleteOldLogs(beforeTime: string): number {
-  const db = getDatabase();
-  const stmt = db.prepare('DELETE FROM call_logs WHERE timestamp < ?');
+  const db = readDatabase();
+  const stmt = prepared(db, 'DELETE FROM call_logs WHERE timestamp < ?');
   const result = stmt.run(beforeTime);
   return result.changes;
 }

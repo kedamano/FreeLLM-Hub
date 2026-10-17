@@ -2,17 +2,16 @@ import type {
   ProviderAdapter,
   ChatOptions,
   StreamChunk,
-  ProviderUsageInfo,
   ProviderConfig,
   ProviderModel,
   GatewayMessage,
   GatewayUsage,
 } from '../contracts.js';
 import { estimateTokenCount } from '../../../shared/utils/index.js';
+import { buildCapabilities, GENERIC_CHAT_CAPS } from '../../../shared/utils/capabilities.js';
 import { contentToImages, contentToText } from '../../../shared/utils/content.js';
 import type { ModelCapability, ProviderConfigField, ProviderReadiness } from '../../../shared/types/index.js';
 import { mapHttpError, mapNetworkError, withRequestTimeout } from '../request-errors.js';
-import { ProviderError } from '../../../shared/errors/index.js';
 
 const OLLAMA_CONFIG_FIELDS: ProviderConfigField[] = [
   {
@@ -50,22 +49,22 @@ export class OllamaAdapter implements ProviderAdapter {
 
   constructor(config?: OllamaConfig) {
     this.baseUrl = (config?.baseUrl || 'http://localhost:11434').replace(/\/$/, '');
-    this.knownModels = (config?.models || []).map((m) => ({
-      id: m.id,
-      providerId: 'ollama',
-      displayName: m.displayName || m.id,
-      capabilities: {
-        supported: m.capabilities || ['chat', 'completion', 'streaming'],
-        contextWindow: m.contextWindow || 8192,
-        supportsStreaming: true,
-        supportsVision: m.supportsVision || false,
-        supportsFunctionCalling: m.supportsFunctionCalling || false,
-        supportsJsonMode: false,
-      },
-      pricing: { type: 'local', currency: 'USD', notes: '免费本地推理' },
-      status: 'available',
-      discoveredAt: new Date().toISOString(),
-    }));
+    this.knownModels = (config?.models || []).map((m) => {
+      const supported = [...(m.capabilities || GENERIC_CHAT_CAPS)];
+      if (m.supportsVision && !supported.includes('vision')) supported.push('vision');
+      if (m.supportsFunctionCalling && !supported.includes('function-calling')) {
+        supported.push('function-calling');
+      }
+      return {
+        id: m.id,
+        providerId: 'ollama',
+        displayName: m.displayName || m.id,
+        capabilities: buildCapabilities(supported, m.contextWindow || 8192),
+        pricing: { type: 'local' as const, currency: 'USD', notes: '免费本地推理' },
+        status: 'available' as const,
+        discoveredAt: new Date().toISOString(),
+      };
+    });
   }
 
   getProviderConfig(): ProviderConfig {
@@ -148,14 +147,7 @@ export class OllamaAdapter implements ProviderAdapter {
                 id: m.name,
                 providerId: 'ollama',
                 displayName: m.name,
-                capabilities: {
-                  supported: ['chat', 'completion', 'streaming'] as ModelCapability[],
-                  contextWindow: 8192,
-                  supportsStreaming: true,
-                  supportsVision: false,
-                  supportsFunctionCalling: false,
-                  supportsJsonMode: false,
-                },
+                capabilities: buildCapabilities(GENERIC_CHAT_CAPS, 8192),
                 pricing: { type: 'local' as const, currency: 'USD', notes: '本地免费推理' },
                 status: 'available' as const,
                 discoveredAt: new Date().toISOString(),
@@ -326,10 +318,6 @@ export class OllamaAdapter implements ProviderAdapter {
         reason: `无法连接到 Ollama (${this.baseUrl}): ${err instanceof Error ? err.message : '连接失败'}`,
       };
     }
-  }
-
-  async getUsageInfo(): Promise<ProviderUsageInfo> {
-    return { remainingTokens: Infinity, quotaTotal: Infinity };
   }
 
   private convertMessages(
