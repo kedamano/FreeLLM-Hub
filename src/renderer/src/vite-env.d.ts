@@ -2,6 +2,7 @@
 
 import type {
   AuditDetailResult,
+  UpdateStateView,
   AuditListResult,
   AuditQuery,
   AuditSummary,
@@ -116,6 +117,22 @@ declare global {
         auditList: (query?: AuditQuery) => Promise<AuditListResult>;
         auditDetail: (requestId: string) => Promise<AuditDetailResult | null>;
         auditSummary: (days?: number, profileId?: string) => Promise<AuditSummary>;
+        exportLogs: (input?: {
+          format?: 'csv' | 'jsonl';
+          profileId?: string;
+          limit?: number;
+        }) => Promise<{ format: string; content: string }>;
+        wipeData: (input?: { profileId?: string }) => Promise<Record<string, number>>;
+      };
+      update: {
+        check: () => Promise<UpdateStateView>;
+        download: () => Promise<UpdateStateView>;
+        install: () => Promise<void>;
+        getState: () => Promise<UpdateStateView>;
+        setEnabled: (input: {
+          enabled?: boolean;
+          autoDownload?: boolean;
+        }) => Promise<UpdateStateView>;
       };
       profiles: {
         list: () => Promise<ProfileView[]>;

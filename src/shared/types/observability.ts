@@ -265,6 +265,17 @@ export interface ProfileActionResult {
   };
 }
 
+/** Application self-update state, as the updater reports it to any surface. */
+export interface UpdateStateView {
+  phase: 'idle' | 'checking' | 'not-available' | 'available' | 'downloading' | 'ready' | 'error' | 'unsupported';
+  version: string | null;
+  percent: number | null;
+  error: string | null;
+  currentVersion: string;
+  enabled?: boolean;
+  autoDownload?: boolean;
+}
+
 /** Token state as surfaced to the UI — never contains a secret value. */
 export interface OAuthCredentialState {
   providerId: ProviderId;

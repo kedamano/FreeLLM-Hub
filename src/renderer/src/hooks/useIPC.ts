@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { routeUrl } from '../../../shared/api-contract.js';
 import type {
   AuditDetailResult,
+  UpdateStateView,
   AuditListResult,
   AuditQuery,
   AuditSummary,
@@ -220,6 +221,18 @@ function createHttpApi(): FreeLLMApi {
         http<AuditDetailResult | null>(routeUrl('usage:audit-detail', { requestId })),
       auditSummary: (days?: number, profileId?: string) =>
         http<AuditSummary>(withQuery(routeUrl('usage:audit-summary'), { days, profileId })),
+      exportLogs: (input?: { format?: 'csv' | 'jsonl'; profileId?: string; limit?: number }) =>
+        postJson<{ format: string; content: string }>(routeUrl('usage:export-logs'), input ?? {}),
+      wipeData: (input?: { profileId?: string }) =>
+        postJson<Record<string, number>>(routeUrl('usage:wipe-data'), input ?? {}),
+    },
+    update: {
+      check: () => postJson<UpdateStateView>(routeUrl('update:check')),
+      download: () => postJson<UpdateStateView>(routeUrl('update:download')),
+      install: () => postJson<void>(routeUrl('update:install')),
+      getState: () => http<UpdateStateView>(routeUrl('update:getState')),
+      setEnabled: (input?: { enabled?: boolean; autoDownload?: boolean }) =>
+        postJson<UpdateStateView>(routeUrl('update:setEnabled'), input ?? {}),
     },
     profiles: {
       list: () => http<ProfileView[]>(routeUrl('profiles:list')),

@@ -8,6 +8,7 @@ import { registerSettingsIpc } from './settings.ipc.js';
 import { registerUsageIpc } from './usage.ipc.js';
 import { registerProfileIpc } from './profiles.ipc.js';
 import { registerOAuthIpc } from './oauth.ipc.js';
+import { registerUpdateIpc } from './update.ipc.js';
 import { registerAppIpc } from './app.ipc.js';
 
 export function registerAllIpcHandlers(
@@ -23,5 +24,6 @@ export function registerAllIpcHandlers(
   registerUsageIpc();
   registerProfileIpc(scheduler);
   registerOAuthIpc();
+  registerUpdateIpc();
   registerAppIpc();
 }

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { ServerIcon, CheckIcon } from '../components/Icons';
 import { useIPC, getFreellmApi, getAdminToken, setAdminToken } from '../hooks/useIPC';
 import { LoadingState } from '../components/ErrorBoundary';
+import UpdateCard from '../components/UpdateCard';
 
 interface GatewaySettings {
   host: string;
@@ -150,6 +151,8 @@ export default function SettingsPage() {
           </button>
         </div>
       )}
+
+      <UpdateCard />
 
       {/* Gateway Configuration */}
       <div className="card card-hover mb-4">

@@ -109,6 +109,15 @@ const api = {
     unlink: (providerId: string) => invoke('oauth:unlink', providerId),
   },
 
+  update: {
+    check: () => invoke('update:check'),
+    download: () => invoke('update:download'),
+    install: () => invoke('update:install'),
+    getState: () => invoke('update:getState'),
+    setEnabled: (input: { enabled?: boolean; autoDownload?: boolean }) =>
+      invoke('update:setEnabled', input),
+  },
+
   gateway: {
     status: () => invoke('gateway:getStatus'),
     getToken: () => invoke('gateway:getToken'),
