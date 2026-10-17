@@ -17,6 +17,7 @@ import {
   type AuditStatus,
 } from '../../usage/audit-recorder.js';
 import type { SchedulerTrace, TraceEvent } from '../../scheduler/trace.js';
+import type { ProviderAdapter } from '../../core/providers/contracts.js';
 import { getProviderRegistry } from '../../core/providers/registry.js';
 import type {
   GatewayMessage,
@@ -581,6 +582,208 @@ export class GatewayServer {
         }
         throw err;
       }
+    });
+
+    // ─── Embeddings (/v1/embeddings) ─────────────────────────────────
+    this.app.post<{
+      Body: {
+        model?: string;
+        input?: string | string[] | number[];
+        encoding_format?: 'float' | 'base64';
+      };
+    }>('/v1/embeddings', async (request, reply) => {
+      return this.handleEmbeddingsRequest(request, reply);
+    });
+  }
+
+  /**
+   * Embeddings dispatch. Not scheduler-routed: the scheduler optimises chat (task
+   * scoring, capability filters), while embeddings are a direct lookup - try the
+   * explicitly addressed provider first, then any enabled adapter that implements the
+   * contract, and let the first success win.
+   */
+  private async handleEmbeddingsRequest(
+    request: import('fastify').FastifyRequest<{
+      Body: {
+        model?: string;
+        input?: string | string[] | number[];
+        encoding_format?: 'float' | 'base64';
+      };
+    }>,
+    reply: import('fastify').FastifyReply
+  ) {
+    const requestId = String(request.id);
+    const startTime = Date.now();
+    const routeUrl = '/v1/embeddings';
+    const body = request.body ?? {};
+    reply.header('X-Request-Id', requestId);
+
+    const input = body.input;
+    const inputCount = Array.isArray(input) ? input.length : input ? 1 : 0;
+    if (!input || inputCount === 0 || typeof input === 'number') {
+      auditRejectedRequest({
+        requestId,
+        route: routeUrl,
+        method: request.method,
+        requestedModel: body.model,
+        clientAddress: request.ip,
+        statusCode: 400,
+        errorCode: 'BAD_REQUEST',
+        errorMessage: 'input field is required (string or array of strings)',
+        params: { model: body.model },
+      });
+      return reply.status(400).send({
+        error: { message: 'input field is required (string or array of strings)', type: 'invalid_request', code: 'BAD_REQUEST' },
+      });
+    }
+
+    beginRequestAudit({
+      requestId,
+      route: routeUrl,
+      method: request.method,
+      requestedModel: body.model,
+      clientAddress: request.ip,
+      params: { inputCount, encodingFormat: body.encoding_format },
+    });
+
+    const registry = getProviderRegistry();
+    const model = body.model ?? '';
+    const candidates: ProviderAdapter[] = [];
+
+    // "provider/model" pins the provider exactly, mirroring /v1/models ownership.
+    const slashIndex = model.indexOf('/');
+    if (slashIndex > 0) {
+      const pinned = registry.get(model.slice(0, slashIndex));
+      if (pinned?.embeddings) candidates.push(pinned);
+    }
+    if (candidates.length === 0) {
+      for (const adapter of registry.getAll()) {
+        if (!adapter.getProviderConfig().isEnabled) continue;
+        if (!adapter.embeddings) continue;
+        // No catalogue filter here on purpose: listModels is async and provider-shaped,
+        // and a wrong provider simply 404s inside the try and falls through to the next
+        // candidate, which is cheaper than a forced catalogue sync.
+        candidates.push(adapter);
+      }
+    }
+
+    if (candidates.length === 0) {
+      completeRequestAudit({
+        requestId,
+        status: 'rejected',
+        statusCode: 404,
+        attempts: 0,
+        durationMs: Date.now() - startTime,
+        errorCode: 'MODEL_NOT_FOUND',
+        errorMessage: '没有可用的 embedding 服务商：确认服务商已启用且实现了 embeddings',
+      });
+      return reply.status(404).send({
+        error: {
+          message: 'No enabled provider serves embeddings. Enable one that does, or address it as provider/model.',
+          type: 'invalid_request_error',
+          code: 'MODEL_NOT_FOUND',
+        },
+      });
+    }
+
+    const failures: Array<{ providerId: string; error: string }> = [];
+    let attempt = 0;
+    for (const adapter of candidates) {
+      attempt += 1;
+      const startedAt = Date.now();
+      recordAuditEvent({
+        requestId,
+        event: 'attempt.start',
+        providerId: adapter.providerId,
+        modelId: model || '(auto)',
+        attempt,
+      });
+      try {
+        const result = await adapter.embeddings!({
+          model,
+          input,
+          encoding_format: body.encoding_format,
+        });
+
+        recordCall({
+          requestId,
+          providerId: adapter.providerId,
+          modelId: result.model || model,
+          status: 'success',
+          durationMs: Date.now() - startedAt,
+          promptTokens: result.usage.promptTokens,
+          completionTokens: 0,
+          totalTokens: result.usage.totalTokens,
+          statusCode: 200,
+          stream: false,
+          attempt,
+        });
+        completeRequestAudit({
+          requestId,
+          status: 'success',
+          statusCode: 200,
+          providerId: adapter.providerId,
+          modelId: result.model || model,
+          attempts: attempt,
+          promptTokens: result.usage.promptTokens,
+          completionTokens: 0,
+          totalTokens: result.usage.totalTokens,
+          durationMs: Date.now() - startedAt,
+        });
+
+        return reply.send({
+          object: 'list',
+          model: result.model || model,
+          data: result.data,
+          usage: {
+            prompt_tokens: result.usage.promptTokens,
+            total_tokens: result.usage.totalTokens,
+          },
+        });
+      } catch (err) {
+        const message = redactSecrets(err instanceof Error ? err.message : String(err));
+        failures.push({ providerId: adapter.providerId, error: message });
+        recordCall({
+          requestId,
+          providerId: adapter.providerId,
+          modelId: model || 'unknown',
+          status: 'error',
+          durationMs: Date.now() - startedAt,
+          promptTokens: 0,
+          completionTokens: 0,
+          errorMessage: message,
+          statusCode: 502,
+          stream: false,
+          attempt,
+        });
+        recordAuditEvent({
+          requestId,
+          event: 'attempt.failed',
+          providerId: adapter.providerId,
+          modelId: model || '(auto)',
+          attempt,
+          reason: 'EMBEDDINGS_FAILED',
+          detail: { message },
+        });
+      }
+    }
+
+    completeRequestAudit({
+      requestId,
+      status: 'error',
+      statusCode: 502,
+      attempts: attempt,
+      durationMs: Date.now() - startTime,
+      errorCode: 'ALL_FAILED',
+      errorMessage: redactSecrets(failures.map((f) => `${f.providerId}: ${f.error}`).join(' | ').slice(0, 400)),
+      providerId: failures[0]?.providerId,
+    });
+    return reply.status(502).send({
+      error: {
+        message: redactSecrets(failures.map((f) => `${f.providerId}: ${f.error}`).join(' | ')).slice(0, 400),
+        type: 'upstream_error',
+        code: 'ALL_FAILED',
+      },
     });
   }
 

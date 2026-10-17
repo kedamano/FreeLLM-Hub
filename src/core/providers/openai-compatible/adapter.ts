@@ -543,6 +543,56 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     }
   }
 
+  async embeddings(input: {
+    model: string;
+    input: string | string[] | number[];
+    encoding_format?: 'float' | 'base64';
+  }): Promise<{
+    model: string;
+    data: Array<{ index: number; embedding: number[] | string }>;
+    usage: import('../../../shared/types/index.js').GatewayUsage;
+  }> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/embeddings`, {
+        method: 'POST',
+        headers: await this.buildRequestHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (err) {
+      throw mapNetworkError(this.providerId, err);
+    }
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw mapHttpError(
+        this.providerId,
+        response.status,
+        errorText,
+        parseRetryAfterMs(response.headers.get('retry-after'))
+      );
+    }
+    const payload = (await response.json()) as {
+      model?: string;
+      data?: Array<{ index?: number; embedding: number[] | string }>;
+      usage?: { prompt_tokens?: number; total_tokens?: number };
+    };
+    const data = (payload.data ?? []).map((entry, index) => ({
+      index: entry.index ?? index,
+      embedding: entry.embedding,
+    }));
+    const promptTokens = payload.usage?.prompt_tokens || 0;
+    return {
+      model: payload.model ?? input.model,
+      data,
+      usage: {
+        promptTokens,
+        completionTokens: 0,
+        totalTokens: payload.usage?.total_tokens || promptTokens,
+      },
+    };
+  }
+
   async validateCredential(credential?: string): Promise<{ valid: boolean; reason?: string }> {
     try {
       // An explicit credential always wins (the UI "test this key" path); otherwise ask

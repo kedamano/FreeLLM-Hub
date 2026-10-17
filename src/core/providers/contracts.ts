@@ -65,6 +65,21 @@ export interface ProviderAdapter {
     options?: ChatOptions
   ): AsyncIterable<StreamChunk>;
 
+  /**
+   * Embeddings pass-through (/v1/embeddings). Optional: only adapters whose provider
+   * actually serves embedding models implement it. `input` accepts a string, an array
+   * of strings, or token arrays and is forwarded verbatim.
+   */
+  embeddings?(input: {
+    model: string;
+    input: string | string[] | number[];
+    encoding_format?: 'float' | 'base64';
+  }): Promise<{
+    model: string;
+    data: Array<{ index: number; embedding: number[] | string }>;
+    usage: GatewayUsage;
+  }>;
+
   validateCredential(credential?: string): Promise<{ valid: boolean; reason?: string }>;
 
   /** Whether the provider can serve requests right now (key + required fields present). */
