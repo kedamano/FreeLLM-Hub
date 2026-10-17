@@ -7,7 +7,7 @@ import { flushQueuedWrites } from '../usage/write-buffer.js';
 import { getCredentialStore } from './security/credential-store.js';
 import { registerAllIpcHandlers } from './ipc/index.js';
 import { registerIpcHandler } from './ipc/handle.js';
-import { readProfileSetting, ensureProfilesSeeded } from '../core/settings/profile-store.js';
+import { readProfileSetting, writeProfileSetting, ensureProfilesSeeded } from '../core/settings/profile-store.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { getProviderRegistry } from '../core/providers/index.js';
 import { registerAllProviders, applyPersistedProviderEnabledFromSettings } from '../core/providers/bootstrap.js';
@@ -16,6 +16,10 @@ import { startLogRetentionSchedule } from '../usage/log-retention.js';
 import { oauthTokenSourceFor } from './services/oauth-service.js';
 import { getUpdateService, type UpdateState } from './services/update-service.js';
 import { getAppConfig } from '../core/config/app-config.js';
+import { HealthProbe } from '../scheduler/health-probe.js';
+import { notify as systemNotify } from './services/update-service.js';
+import { startBudgetChecks } from '../usage/budget-service.js';
+import { getActiveProfileId } from '../core/settings/profile-store.js';
 
 export type { GatewayConfig } from './gateway/gateway-manager.js';
 
@@ -28,6 +32,8 @@ export class AppLifecycle {
   private shutdownComplete = false;
   private disposeLogRetention: () => void = () => {};
   private disposeUpdateChecks: () => void = () => {};
+  private disposeHealthProbe: () => void = () => {};
+  private disposeBudgetChecks: () => void = () => {};
 
   constructor() {
     this.scheduler = new Scheduler();
@@ -84,6 +90,52 @@ export class AppLifecycle {
     // Staggered so a window open and a gateway bind are not competing with a feed
     // request on first paint; the interval handler covers the long-running case.
     setTimeout(() => void this.runUpdateCheck(false), 8000);
+
+    this.startHealthProbe();
+    this.disposeBudgetChecks = startBudgetChecks(() => getActiveProfileId(), {
+      readSetting: (key) => {
+        try {
+          return readProfileSetting(key);
+        } catch {
+          return null;
+        }
+      },
+      writeSetting: (key, value) => {
+        try {
+          writeProfileSetting(key, value);
+        } catch {
+          /* settings table not ready */
+        }
+      },
+    });
+  }
+
+  /**
+   * Background provider probing: catches dead providers before a user request does.
+   * Transitions (down / recovered) surface as system notifications - a provider going
+   * dark is exactly the kind of thing the user wants to know without opening the app.
+   */
+  private startHealthProbe(): void {
+    const registry = getProviderRegistry();
+    const probe = new HealthProbe({
+      targets: () =>
+        registry
+          .getAll()
+          .filter((adapter) => adapter.getProviderConfig().isEnabled)
+          .map((adapter) => ({
+            providerId: adapter.providerId,
+            isAvailable: () => adapter.isAvailable(),
+          })),
+      onTransition: (result) => {
+        const name = registry.get(result.providerId)?.providerName ?? result.providerId;
+        if (result.transition === 'down') {
+          systemNotify('服务商探活失败', `${name} 连续探活失败，已从候选池暂时降权`);
+        } else if (result.transition === 'recovered') {
+          systemNotify('服务商已恢复', `${name} 探活恢复正常`);
+        }
+      },
+    });
+    this.disposeHealthProbe = probe.start();
   }
 
   /** Manual (tray) or startup auto-check; both funnel the result back into the menu. */
@@ -152,6 +204,8 @@ export class AppLifecycle {
       console.log('[App] Shutting down...');
 
       this.disposeUpdateChecks();
+      this.disposeBudgetChecks();
+      this.disposeHealthProbe();
       this.disposeLogRetention();
       await this.gatewayManager.stop();
 
