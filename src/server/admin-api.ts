@@ -9,6 +9,9 @@ import * as settingsService from '../main/services/settings-service.js';
 import * as usageService from '../main/services/usage-service.js';
 import * as profileService from '../main/services/profile-service.js';
 import * as oauthService from '../main/services/oauth-service.js';
+import { exportCallLogs, wipeUserData } from '../usage/data-governance.js';
+import { getActiveProfileId } from '../core/settings/profile-store.js';
+import { getUpdateService } from '../main/services/update-service.js';
 import { clampDays, normalizeAuditQuery } from '../usage/audit-query.js';
 import { getAppConfig } from '../core/config/app-config.js';
 import { canRevealCredential, createAdminAuthHook } from './admin-auth.js';
@@ -221,6 +224,41 @@ export async function registerAdminApi(app: FastifyInstance, opts: AdminApiOptio
     '/api/audit/requests/:requestId',
     async (request, reply) =>
       sendValue(reply, usageService.auditDetail(request.params.requestId))
+  );
+
+  app.post<{ Body: { format?: 'csv' | 'jsonl'; profileId?: string; limit?: number } }>(
+    '/api/usage/export',
+    async (request, reply) => {
+      const format = request.body?.format === 'jsonl' ? 'jsonl' : 'csv';
+      const profileId = request.body?.profileId || getActiveProfileId();
+      const content = exportCallLogs({ profileId, format, limit: request.body?.limit });
+      if (format === 'jsonl') {
+        return reply.type('application/x-ndjson').send(content);
+      }
+      return reply
+        .type('text/csv; charset=utf-8')
+        .header('Content-Disposition', `attachment; filename="freellm-hub-calls-${Date.now()}.csv"`)
+        .send(content);
+    }
+  );
+
+  app.post<{ Body: { profileId?: string } }>('/api/usage/wipe', async (request) =>
+    wipeUserData(request.body?.profileId)
+  );
+
+  // ─── App update (electron-updater; unsupported states answered honestly) ──
+  app.post('/api/update/check', async () => getUpdateService().check(true));
+  app.post('/api/update/download', async () => getUpdateService().download());
+  app.post('/api/update/install', async () => getUpdateService().install());
+  app.get('/api/update/state', async () => getUpdateService().getState());
+  app.put<{ Body: { enabled?: boolean; autoDownload?: boolean } }>(
+    '/api/update/enabled',
+    async (request) => {
+      const body = request.body ?? {};
+      if (typeof body.enabled === 'boolean') getUpdateService().setEnabled(body.enabled);
+      if (typeof body.autoDownload === 'boolean') getUpdateService().setAutoDownload(body.autoDownload);
+      return getUpdateService().getState();
+    }
   );
 
   app.get<{ Querystring: { days?: string; profileId?: string } }>(

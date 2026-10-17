@@ -82,6 +82,13 @@ export const ADMIN_ROUTE_BINDINGS: Record<IpcChannel, AdminRouteBinding> = {
   'oauth:cancel': { method: 'POST', path: '/oauth/flows/:state/cancel' },
   'oauth:refresh': { method: 'POST', path: '/oauth/:providerId/refresh' },
   'oauth:unlink': { method: 'DELETE', path: '/oauth/:providerId' },
+  'usage:export-logs': { method: 'POST', path: '/usage/export' },
+  'usage:wipe-data': { method: 'POST', path: '/usage/wipe' },
+  'update:check': { method: 'POST', path: '/update/check' },
+  'update:download': { method: 'POST', path: '/update/download' },
+  'update:install': { method: 'POST', path: '/update/install' },
+  'update:getState': { method: 'GET', path: '/update/state' },
+  'update:setEnabled': { method: 'PUT', path: '/update/enabled' },
 
   'gateway:getStatus': { method: 'GET', path: '/gateway/status' },
   'gateway:getToken': { method: 'GET', path: '/gateway/token' },

@@ -1,5 +1,5 @@
 import { deleteOldLogs } from './usage-recorder.js';
-import { deleteOldAuditRecords } from './audit-recorder.js';
+import { purgeWithRetentionPolicies, resolveAuditRetention } from './data-governance.js';
 import { readSetting } from '../core/settings/settings-store.js';
 import { loggerFor } from '../core/log/logger.js';
 
@@ -30,16 +30,16 @@ export function purgeOldLogs(now: number = Date.now(), days: number = resolveRet
   return deleteOldLogs(cutoff);
 }
 
-export function purgeAuditAndLogs(now: number = Date.now(), days: number = resolveRetentionDays()): PurgeResult {
-  const cutoff = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
-  const result: PurgeResult = { callLogs: 0, auditRequests: 0 };
-  result.callLogs = deleteOldLogs(cutoff);
-  try {
-    result.auditRequests = deleteOldAuditRecords(cutoff);
-  } catch {
-    /* audit table may be mid-migration on a first run; the next sweep retries */
-  }
-  return result;
+export function purgeAuditAndLogs(
+  now: number = Date.now(),
+  days: number = resolveRetentionDays()
+): PurgeResult {
+  // The windows are split now: the audit trail (routing decisions, one event per
+  // candidate) grows much faster than the ledger and is worth far less after a few
+  // days, so it gets its own - shorter - retention setting.
+  const auditDays = resolveAuditRetention();
+  const split = purgeWithRetentionPolicies(now, days, auditDays);
+  return { callLogs: split.callLogs, auditRequests: split.auditRequests };
 }
 
 /**

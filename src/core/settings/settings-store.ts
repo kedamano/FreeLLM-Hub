@@ -13,6 +13,7 @@ export const EDITABLE_SETTINGS_KEYS = new Set<string>([
   // Cost model inputs edited from the usage panel.
   'cost_reference_price',
   'currency_rates',
+  'audit_retention_days',
 ]);
 
 export const RESERVED_PREFIXES = [
