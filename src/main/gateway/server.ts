@@ -39,6 +39,15 @@ import { DEFAULT_REQUEST_TIMEOUT_MS } from '../../core/providers/request-errors.
 import { getAppConfig } from '../../core/config/app-config.js';
 import { readSetting } from '../../core/settings/settings-store.js';
 import { registerCommonMiddleware } from './middleware.js';
+import {
+  AnthropicStreamTranslator,
+  AnthropicTranslateError,
+  estimateAnthropicTokens,
+  translateAnthropicRequest,
+  translateErrorToAnthropic,
+  translateGatewayResponse,
+  type AnthropicMessagesRequest,
+} from './anthropic.js';
 import { getAppLogger } from '../../core/log/logger.js';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
@@ -494,6 +503,85 @@ export class GatewayServer {
 
       return this.handleNonStreamRequest(reply, gatewayRequest, startTime, trace, attemptCount);
     });
+
+    // ─── Anthropic Messages API (/v1/messages) ─────────────────────
+    // Claude Code, Cline and friends speak this dialect; the translation lives in
+    // ./anthropic.ts, so this route is only transport + accounting.
+
+    this.app.post<{
+      Body: AnthropicMessagesRequest;
+    }>('/v1/messages', async (request, reply) => {
+      const requestId = String(request.id);
+      const startTime = Date.now();
+      const routeUrl = request.routeOptions?.url ?? '/v1/messages';
+      reply.header('X-Request-Id', requestId);
+
+      let translated: ReturnType<typeof translateAnthropicRequest>;
+      try {
+        translated = translateAnthropicRequest(request.body ?? {}, requestId);
+      } catch (err) {
+        if (err instanceof AnthropicTranslateError) {
+          auditRejectedRequest({
+            requestId,
+            route: routeUrl,
+            method: request.method,
+            requestedModel: request.body?.model,
+            clientAddress: request.ip,
+            statusCode: 400,
+            errorCode: 'BAD_REQUEST',
+            errorMessage: err.message,
+          });
+          return reply.status(400).send({
+            type: 'error',
+            error: { type: 'invalid_request_error', message: err.message },
+          });
+        }
+        throw err;
+      }
+
+      const gatewayRequest = translated.gateway;
+      beginRequestAudit({
+        requestId,
+        route: routeUrl,
+        method: request.method,
+        stream: Boolean(gatewayRequest.stream),
+        requestedModel: gatewayRequest.model,
+        taskType: gatewayRequest.taskType,
+        clientAddress: request.ip,
+        params: {
+          messageCount: gatewayRequest.messages.length,
+          maxTokens: gatewayRequest.maxTokens,
+          temperature: gatewayRequest.temperature,
+          hasTools: Boolean(gatewayRequest.tools?.length),
+          dialect: 'anthropic',
+        },
+      });
+
+      const { trace, attemptCount } = createRequestTrace(requestId);
+
+      if (gatewayRequest.stream) {
+        return this.handleAnthropicStreamRequest(reply, gatewayRequest, startTime, trace, attemptCount, requestId);
+      }
+      return this.handleAnthropicNonStreamRequest(reply, gatewayRequest, startTime, trace, attemptCount, requestId);
+    });
+
+    this.app.post<{
+      Body: AnthropicMessagesRequest;
+    }>('/v1/messages/count_tokens', async (request, reply) => {
+      // A utility endpoint: no audit row, or the panel would fill with counter reads.
+      try {
+        const inputTokens = estimateAnthropicTokens(request.body ?? {});
+        return reply.send({ input_tokens: inputTokens });
+      } catch (err) {
+        if (err instanceof AnthropicTranslateError) {
+          return reply.status(400).send({
+            type: 'error',
+            error: { type: 'invalid_request_error', message: err.message },
+          });
+        }
+        throw err;
+      }
+    });
   }
 
   private async handleNonStreamRequest(
@@ -850,6 +938,261 @@ export class GatewayServer {
       } finally {
         closeStream();
         if (!raw.writableEnded && !raw.destroyed) raw.end();
+      }
+    })();
+
+    return reply;
+  }
+
+  /** Anthropic dialect, non-stream: same scheduler, different response envelope. */
+  private async handleAnthropicNonStreamRequest(
+    reply: import('fastify').FastifyReply,
+    request: GatewayRequest,
+    startTime: number,
+    trace: SchedulerTrace,
+    attemptCount: () => number,
+    requestId: string
+  ) {
+    const requestedModel = request.model ?? 'auto';
+    try {
+      const result = await this.scheduler.execute(request, {
+        trace,
+        timeoutMs: resolveRequestTimeoutMs(),
+      });
+
+      recordCall({
+        requestId,
+        providerId: result.providerId,
+        modelId: result.model,
+        taskType: request.taskType,
+        status: 'success',
+        durationMs: result.durationMs,
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        totalTokens: result.usage.totalTokens,
+        statusCode: 200,
+        stream: false,
+        attempt: Math.max(1, attemptCount()),
+      });
+
+      completeRequestAudit({
+        requestId,
+        status: 'success',
+        statusCode: 200,
+        providerId: result.providerId,
+        modelId: result.model,
+        attempts: Math.max(1, attemptCount()),
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        totalTokens: result.usage.totalTokens,
+        durationMs: Date.now() - startTime,
+      });
+
+      return reply.send(translateGatewayResponse({ ...result, requestId }, requestedModel));
+    } catch (err) {
+      const desc = describeError(err);
+      const providerId = (extractProviderId(err) ?? 'unknown') as ProviderId;
+      const attempts = Math.max(1, attemptCount());
+      const message = redactSecrets(getSafeErrorMessage(err));
+
+      recordCall({
+        requestId,
+        providerId,
+        modelId: request.model ?? 'unknown',
+        taskType: request.taskType,
+        status: desc.code === 'RATE_LIMITED' ? 'rate_limited' : 'error',
+        durationMs: Date.now() - startTime,
+        promptTokens: 0,
+        completionTokens: 0,
+        statusCode: desc.status,
+        stream: false,
+        attempt: attempts,
+      });
+      completeRequestAudit({
+        requestId,
+        status: auditStatusForError(desc),
+        statusCode: desc.status,
+        providerId,
+        modelId: request.model ?? 'unknown',
+        attempts,
+        durationMs: Date.now() - startTime,
+        errorCode: desc.code,
+        errorMessage: message,
+      });
+
+      const envelope = translateErrorToAnthropic(desc.status, desc.code, message);
+      if (desc.retryAfterSeconds) reply.header('Retry-After', String(desc.retryAfterSeconds));
+      return reply.status(envelope.status).send(envelope.body);
+    }
+  }
+
+  /**
+   * Anthropic dialect, streaming. Same hijack-and-drain structure as the OpenAI stream
+   * path; the dialect-specific work is owned by AnthropicStreamTranslator, which
+   * converts gateway chunks into the content_block event grammar.
+   */
+  private handleAnthropicStreamRequest(
+    reply: import('fastify').FastifyReply,
+    request: GatewayRequest,
+    startTime: number,
+    trace: SchedulerTrace,
+    attemptCount: () => number,
+    requestId: string
+  ) {
+    reply.hijack();
+    const raw = reply.raw;
+    const requestedModel = request.model ?? 'auto';
+
+    raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Request-Id': requestId,
+    });
+
+    const translator = new AnthropicStreamTranslator(`msg_${requestId}`, requestedModel);
+    let clientGone = false;
+    let closed = false;
+    let stream: AsyncGenerator<{
+      content?: string;
+      finishReason?: string;
+      usage?: import('../../shared/types/index.js').GatewayUsage;
+      model: string;
+      providerId: ProviderId;
+    }> | null = null;
+
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      if (stream) {
+        void Promise.resolve(stream.return(undefined as never)).catch(() => undefined);
+      }
+    };
+
+    raw.on('close', () => {
+      clientGone = true;
+      closeStream();
+    });
+    raw.on('error', () => {
+      clientGone = true;
+      closeStream();
+    });
+
+    const write = (data: string): Promise<void> =>
+      new Promise<void>((resolveWrite) => {
+        if (clientGone || raw.writableEnded) return resolveWrite();
+        if (raw.write(data)) resolveWrite();
+        else raw.once('drain', () => resolveWrite());
+      });
+
+    stream = this.scheduler.executeStream(request, { trace });
+
+    void (async () => {
+      let providerId: ProviderId = 'unknown';
+      let modelId = request.model ?? 'unknown';
+      let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      let firstTokenMs: number | null = null;
+
+      try {
+        for await (const chunk of stream) {
+          if (clientGone) break;
+          if (firstTokenMs === null) firstTokenMs = Date.now() - startTime;
+          providerId = chunk.providerId ?? providerId;
+          modelId = chunk.model ?? modelId;
+          if (chunk.usage) usage = chunk.usage;
+          const out = translator.push(chunk);
+          if (out) await write(out);
+        }
+
+        if (clientGone) {
+          recordAuditEvent({
+            requestId,
+            event: 'client.disconnected',
+            providerId,
+            modelId,
+          });
+        } else {
+          // The usage tail chunk carries no finishReason, so the normal end of the
+          // generator still owes the client message_delta + message_stop. When the
+          // final chunk DID carry one, this is a no-op by design.
+          const tail = translator.finishAbruptly();
+          if (tail) await write(tail);
+        }
+
+        recordCall({
+          requestId,
+          providerId,
+          modelId,
+          taskType: request.taskType,
+          status: clientGone ? 'error' : 'success',
+          durationMs: Date.now() - startTime,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          errorMessage: clientGone ? 'Client disconnected before completion' : undefined,
+          statusCode: 200,
+          stream: true,
+          attempt: Math.max(1, attemptCount()),
+        });
+
+        completeRequestAudit({
+          requestId,
+          status: clientGone ? 'aborted' : 'success',
+          statusCode: 200,
+          providerId,
+          modelId,
+          attempts: Math.max(1, attemptCount()),
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          durationMs: Date.now() - startTime,
+          timeToFirstTokenMs: firstTokenMs ?? undefined,
+          errorCode: clientGone ? 'CLIENT_DISCONNECTED' : undefined,
+          errorMessage: clientGone ? 'Client disconnected before completion' : undefined,
+        });
+      } catch (err) {
+        const desc = describeError(err);
+        if (providerId === 'unknown') providerId = (extractProviderId(err) ?? 'unknown') as ProviderId;
+        const attempts = Math.max(1, attemptCount());
+        const message = redactSecrets(getSafeErrorMessage(err));
+
+        recordCall({
+          requestId,
+          providerId,
+          modelId,
+          taskType: request.taskType,
+          status: desc.code === 'RATE_LIMITED' ? 'rate_limited' : 'error',
+          durationMs: Date.now() - startTime,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          errorMessage: message,
+          statusCode: desc.status,
+          stream: true,
+          attempt: attempts,
+        });
+        completeRequestAudit({
+          requestId,
+          status: auditStatusForError(desc),
+          statusCode: desc.status,
+          providerId,
+          modelId,
+          attempts,
+          durationMs: Date.now() - startTime,
+          timeToFirstTokenMs: firstTokenMs ?? undefined,
+          errorCode: desc.code,
+          errorMessage: message,
+        });
+
+        // An error after the tail already went out cannot be delivered: message_stop
+        // terminates the grammar, so stay silent rather than violate it.
+        if (!clientGone && !translator.isFinished()) {
+          const envelope = translateErrorToAnthropic(desc.status, desc.code, message);
+          await write(translator.fail(envelope.body.error.type, message));
+        }
+      } finally {
+        closeStream();
+        if (!raw.writableEnded) raw.end();
       }
     })();
 

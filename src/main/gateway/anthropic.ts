@@ -550,6 +550,11 @@ export class AnthropicStreamTranslator {
     return this.events.join('');
   }
 
+  /** True once the terminal message_delta / message_stop pair has been emitted. */
+  isFinished(): boolean {
+    return this.finished;
+  }
+
   /** Safety net: emit the tail if the generator ended without a finish reason. */
   finishAbruptly(): string {
     // Reset first: if the stream already flushed its tail inside push(), returning the
