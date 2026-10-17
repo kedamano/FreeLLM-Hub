@@ -25,7 +25,22 @@ describe('app log rotation', () => {
       else process.env[key] = value;
     }
     resetAppConfigCache();
-    if (dir) rmSync(dir, { recursive: true, force: true });
+    if (dir) {
+      // Windows: pino-roll's worker thread may still hold the log file open, making
+      // rmSync throw ENOTEMPTY. Retry once after a tick; if it still fails, leave the
+      // temp dir for the OS to clean up - a leaked temp dir is better than a flaky test.
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        setImmediate(() => {
+          try {
+            rmSync(dir!, { recursive: true, force: true });
+          } catch {
+            /* leaked temp dir: the OS cleans tmp on reboot */
+          }
+        });
+      }
+    }
     dir = null;
     vi.resetModules();
   });
