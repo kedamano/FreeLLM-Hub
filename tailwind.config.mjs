@@ -1,58 +1,64 @@
 /** @type {import('tailwindcss').Config} */
+// Design language derived from matrix.mzsjai.com's own CSS tokens:
+// azure-blue primary (oklch 55% .2 255 = #006de2), cool near-white surfaces,
+// white cards, soft 10-16px radii, Sora + Noto Sans SC type stack.
 export default {
   content: ['./src/renderer/index.html', './src/renderer/src/**/*.{ts,tsx}'],
   theme: {
     extend: {
       colors: {
         primary: {
-          50: '#EEF2FF',
-          100: '#E0E7FF',
-          200: '#C7D2FE',
-          300: '#A5B4FC',
-          400: '#818CF8',
-          500: '#6366F1',
-          600: '#4F46E5',
-          700: '#4338CA',
-          800: '#3730A3',
-          900: '#312E81',
+          50: '#EEF6FF',
+          100: '#D9ECFF',
+          200: '#BCE0FF',
+          300: '#8ECBFF',
+          400: '#4D9DFF',
+          500: '#147EF0',
+          600: '#006DE2', // brand azure — buttons, links, active states
+          700: '#0057C4',
+          800: '#03479B',
+          900: '#0A3D7F',
         },
         surface: {
-          50: '#FAFBFC',
-          100: '#F4F5F7',
-          200: '#EBECF0',
-          300: '#DFE1E6',
-          400: '#C1C7D0',
-          500: '#97A0AF',
-          600: '#6B778C',
-          700: '#5E6C84',
-          800: '#42526E',
-          900: '#172B4D',
+          50: '#F9FAFB', // app background
+          100: '#F1F4F8',
+          200: '#DADEE5', // borders
+          300: '#C7CCD4',
+          400: '#9AA2AD', // placeholders
+          500: '#6B7280',
+          600: '#5D646F', // muted foreground
+          700: '#474D57',
+          800: '#2B3038',
+          900: '#030712', // primary text
         },
         accent: {
-          teal: '#0EA5A0',
-          violet: '#7C3AED',
-          rose: '#E11D48',
-          amber: '#D97706',
+          teal: '#00B089',
+          violet: '#A84CDF',
+          rose: '#DE3B3D',
+          amber: '#EE9733',
         },
-        success: '#10B981',
-        warning: '#F59E0B',
-        error: '#EF4444',
-        info: '#3B82F6',
+        success: '#00B089',
+        warning: '#EE9733',
+        error: '#DE3B3D',
+        info: '#006DE2',
       },
       fontFamily: {
-        sans: ['"Segoe UI"', 'system-ui', '-apple-system', 'sans-serif'],
-        mono: ['"SF Mono"', 'Consolas', 'Menlo', 'monospace'],
+        // Sora is self-hosted (assets/fonts) so it works offline and under CSP.
+        sans: ['Sora', '"Noto Sans SC"', 'system-ui', '-apple-system', '"Segoe UI"', 'sans-serif'],
+        mono: ['"JetBrains Mono"', '"SF Mono"', 'Consolas', 'Menlo', 'monospace'],
       },
       boxShadow: {
-        'card': '0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06)',
-        'card-hover': '0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04)',
-        'inset-line': 'inset 0 -1px 0 rgba(0,0,0,0.06)',
+        card: '0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06)',
+        'card-hover': '0 8px 24px -6px rgba(0,109,226,0.12), 0 2px 6px rgba(16,24,40,0.06)',
+        'inset-line': 'inset 0 -1px 0 rgba(16,24,40,0.06)',
+        pop: '0 12px 32px -8px rgba(16,24,40,0.18)',
       },
       borderRadius: {
-        'card': '12px',
+        card: '16px',
+        field: '10px',
       },
       transitionTimingFunction: {
-        'spring': 'cubic-bezier(0.34, 1.56, 0.64, 1)',
+        spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
       },
     },
   },
