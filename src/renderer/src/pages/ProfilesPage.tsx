@@ -55,7 +55,7 @@ export default function ProfilesPage() {
   };
 
   return (
-    <div className="max-w-5xl">
+    <div className="mx-auto max-w-6xl">
       <PageHeader
         title="配置档"
         description={

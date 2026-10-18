@@ -88,11 +88,25 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
   );
 }
 
-export function EmptyState({ message = '暂无数据' }: { message?: string }) {
+export function EmptyState({
+  message = '暂无数据',
+  hint,
+  action,
+  icon = '∅',
+}: {
+  message?: string;
+  hint?: string;
+  action?: ReactNode;
+  icon?: ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-center py-12 text-center">
-      <div className="text-surface-400 text-2xl mb-2" aria-hidden="true">∅</div>
-      <p className="text-sm text-surface-400">{message}</p>
+    <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-surface-200 bg-surface-50/40 px-6 py-10 text-center">
+      <div className="mb-1 text-2xl text-surface-300" aria-hidden="true">
+        {icon}
+      </div>
+      <p className="text-sm font-medium text-surface-500">{message}</p>
+      {hint && <p className="max-w-sm text-xs text-surface-400">{hint}</p>}
+      {action && <div className="mt-3">{action}</div>}
     </div>
   );
 }

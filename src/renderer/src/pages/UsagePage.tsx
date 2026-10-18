@@ -5,6 +5,7 @@ import { useProfileChanges } from '../hooks/useProfiles';
 import { unwrapIpc, unwrapIpcList } from '../lib/ipc-result';
 import { LoadingState, ErrorState, EmptyState } from '../components/ErrorBoundary';
 import PageHeader from '../components/PageHeader';
+import PaginationBar from '../components/PaginationBar';
 import {
   ProviderStackChart,
   QuotaCeilingList,
@@ -50,9 +51,15 @@ const WINDOWS = [
   { days: 90, label: '90 天' },
 ];
 
+// How many recent call records to pull from the local store for client-side paging.
+const CALLS_FETCH_LIMIT = 200;
+const CALLS_PAGE_SIZE_OPTIONS = [20, 50, 100];
+
 export default function UsagePage() {
   const [days, setDays] = useNumberQueryParam('days', 30, 1);
   const [reloadKey, setReloadKey] = useState(0);
+  const [callsPage, setCallsPage] = useState(0);
+  const [callsPageSize, setCallsPageSize] = useState(20);
   useProfileChanges(() => setReloadKey((value) => value + 1));
 
   const {
@@ -92,18 +99,25 @@ export default function UsagePage() {
   } = useIPC<CallLogEntry[]>(async () => {
     const api = getFreellmApi();
     if (!api) return import.meta.env.DEV ? [] : [];
-    return unwrapIpcList<CallLogEntry>(await api.usage.recentCalls(50));
+    return unwrapIpcList<CallLogEntry>(await api.usage.recentCalls(CALLS_FETCH_LIMIT));
   }, [reloadKey]);
 
   const calls = callsData ?? [];
   const topProviders = (cost?.byProvider ?? []).slice(0, 6).map((row) => row.providerId);
+
+  const callsPageCount = Math.max(1, Math.ceil(calls.length / callsPageSize));
+  const safeCallsPage = Math.min(callsPage, callsPageCount - 1);
+  const pagedCalls = calls.slice(
+    safeCallsPage * callsPageSize,
+    safeCallsPage * callsPageSize + callsPageSize
+  );
 
   if (statsError) {
     return <ErrorState message={`统计数据加载失败：${statsError}`} onRetry={refetchStats} />;
   }
 
   return (
-    <div className="max-w-6xl">
+    <div className="mx-auto max-w-7xl">
       <PageHeader
         title="用量与成本"
         description="免费池的额度消耗、折算成本与调用明细（数据范围：当前配置档）"
@@ -193,42 +207,45 @@ export default function UsagePage() {
 
       {cost && cost.byModel.length > 0 && (
         <div className="card mb-6">
-          <h3 className="text-sm font-semibold text-surface-800 mb-3">模型明细</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-surface-800">模型明细</h3>
+            <span className="text-[11px] text-surface-400">{cost.byModel.length} 个模型</span>
+          </div>
+          <div className="max-h-[40vh] overflow-auto rounded-lg">
+            <table className="data-table text-left">
               <thead>
-                <tr className="text-left text-surface-500 border-b border-surface-100">
-                  <th className="pb-2 font-medium">服务商</th>
-                  <th className="pb-2 font-medium">模型</th>
-                  <th className="pb-2 font-medium">计费</th>
-                  <th className="pb-2 font-medium text-right">请求</th>
-                  <th className="pb-2 font-medium text-right">Tokens</th>
-                  <th className="pb-2 font-medium text-right">实际</th>
-                  <th className="pb-2 font-medium text-right">节省</th>
+                <tr className="text-surface-500">
+                  <th>服务商</th>
+                  <th>模型</th>
+                  <th>计费</th>
+                  <th className="text-right">请求</th>
+                  <th className="text-right">Tokens</th>
+                  <th className="text-right">实际</th>
+                  <th className="text-right">节省</th>
                 </tr>
               </thead>
               <tbody>
                 {cost.byModel.map((row) => (
-                  <tr key={`${row.providerId}:${row.modelId}`} className="border-b border-surface-50">
-                    <td className="py-2 text-surface-700">{row.providerId}</td>
-                    <td className="py-2 font-mono text-surface-500 break-all whitespace-normal">
+                  <tr key={`${row.providerId}:${row.modelId}`}>
+                    <td className="text-surface-700">{row.providerId}</td>
+                    <td className="font-mono text-surface-500 break-all whitespace-normal">
                       {row.modelId}
                     </td>
-                    <td className="py-2">
+                    <td>
                       <span className={row.pricingType === 'free' ? 'badge-green' : 'badge-yellow'}>
                         {pricingLabel(row.pricingType)}
                       </span>
                     </td>
-                    <td className="py-2 text-right tabular-nums text-surface-600">
+                    <td className="text-right tabular-nums text-surface-600">
                       {formatNumber(row.requests)}
                     </td>
-                    <td className="py-2 text-right tabular-nums text-surface-600">
+                    <td className="text-right tabular-nums text-surface-600">
                       {formatTokens(row.tokens)}
                     </td>
-                    <td className="py-2 text-right tabular-nums text-surface-600">
+                    <td className="text-right tabular-nums text-surface-600">
                       {formatUsd(row.costUsd)}
                     </td>
-                    <td className="py-2 text-right tabular-nums text-teal-600">
+                    <td className="text-right tabular-nums text-teal-600">
                       {formatUsd(row.savedCostUsd)}
                     </td>
                   </tr>
@@ -240,52 +257,76 @@ export default function UsagePage() {
       )}
 
       <div className="card">
-        <h3 className="text-sm font-semibold text-surface-800 mb-3">最近调用记录</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-left text-surface-500 border-b border-surface-100">
-                <th className="pb-2 font-medium">时间</th>
-                <th className="pb-2 font-medium">服务商</th>
-                <th className="pb-2 font-medium">模型</th>
-                <th className="pb-2 font-medium">状态</th>
-                <th className="pb-2 font-medium text-right">延迟</th>
-                <th className="pb-2 font-medium text-right">Tokens</th>
-                <th className="pb-2 font-medium text-right">节省</th>
-              </tr>
-            </thead>
-            <tbody>
-              {calls.slice(0, 20).map((call) => (
-                <tr key={call.id} className="border-b border-surface-50">
-                  <td className="py-2 text-surface-600 whitespace-nowrap">
-                    {formatTimestampSafe(call.timestamp)}
-                  </td>
-                  <td className="py-2 text-surface-700">{call.providerId}</td>
-                  <td className="py-2 text-surface-500 font-mono break-all whitespace-normal">
-                    {call.modelId}
-                  </td>
-                  <td className="py-2">
-                    <StatusBadge status={call.status} />
-                  </td>
-                  <td className="py-2 text-right text-surface-500">{call.durationMs}ms</td>
-                  <td className="py-2 text-right text-surface-500">
-                    {call.promptTokens + call.completionTokens}
-                  </td>
-                  <td className="py-2 text-right text-teal-600">
-                    {formatUsd(call.savedCostUsd ?? 0)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {callsLoading ? (
-            <LoadingState />
-          ) : callsError ? (
-            <ErrorState message={`调用记录加载失败：${callsError}`} onRetry={refetchCalls} />
-          ) : calls.length === 0 ? (
-            <EmptyState message="暂无调用记录" />
-          ) : null}
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-surface-800">最近调用记录</h3>
+          <span className="text-[11px] text-surface-400">
+            最近 {formatNumber(calls.length)} 次
+          </span>
         </div>
+        {callsLoading ? (
+          <LoadingState />
+        ) : callsError ? (
+          <ErrorState message={`调用记录加载失败：${callsError}`} onRetry={refetchCalls} />
+        ) : calls.length === 0 ? (
+          <EmptyState
+            message="暂无调用记录"
+            hint="通过本地网关发起一次请求后，这里就会出现明细"
+          />
+        ) : (
+          <>
+            <div className="max-h-[52vh] overflow-auto rounded-lg">
+              <table className="data-table text-left">
+                <thead>
+                  <tr className="text-surface-500">
+                    <th>时间</th>
+                    <th>服务商</th>
+                    <th>模型</th>
+                    <th>状态</th>
+                    <th className="text-right">延迟</th>
+                    <th className="text-right">Tokens</th>
+                    <th className="text-right">节省</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedCalls.map((call) => (
+                    <tr key={call.id}>
+                      <td className="text-surface-600 whitespace-nowrap">
+                        {formatTimestampSafe(call.timestamp)}
+                      </td>
+                      <td className="text-surface-700">{call.providerId}</td>
+                      <td className="text-surface-500 font-mono break-all whitespace-normal">
+                        {call.modelId}
+                      </td>
+                      <td>
+                        <StatusBadge status={call.status} />
+                      </td>
+                      <td className="text-right tabular-nums text-surface-500">{call.durationMs}ms</td>
+                      <td className="text-right tabular-nums text-surface-500">
+                        {call.promptTokens + call.completionTokens}
+                      </td>
+                      <td className="text-right tabular-nums text-teal-600">
+                        {formatUsd(call.savedCostUsd ?? 0)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <PaginationBar
+              page={safeCallsPage}
+              pageCount={callsPageCount}
+              total={calls.length}
+              unitLabel="条"
+              pageSize={callsPageSize}
+              pageSizeOptions={CALLS_PAGE_SIZE_OPTIONS}
+              onPageSizeChange={(size) => {
+                setCallsPageSize(size);
+                setCallsPage(0);
+              }}
+              onPageChange={setCallsPage}
+            />
+          </>
+        )}
       </div>
         </>
       )}

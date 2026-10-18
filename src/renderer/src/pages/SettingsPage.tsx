@@ -137,7 +137,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="max-w-3xl">
+    <div className="mx-auto max-w-4xl">
       <div className="mb-6 flex flex-col">
         <h2 className="block text-xl font-bold text-surface-900 tracking-tight">设置</h2>
         <p className="block text-sm text-surface-500 mt-1">网关服务与认证配置</p>

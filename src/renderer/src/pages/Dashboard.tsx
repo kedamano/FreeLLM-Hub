@@ -1,8 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { DashboardIcon, ProviderIcon, ModelIcon, ZapIcon, ServerIcon } from '../components/Icons';
 import { useIPC, getFreellmApi } from '../hooks/useIPC';
 import { unwrapIpc } from '../lib/ipc-result';
 import { LoadingState, ErrorState } from '../components/ErrorBoundary';
+import { TokenCostTrendChart } from '../components/charts';
+import { formatNumber, formatTokens, formatUsd } from '../lib/format';
+import type { CostSummary } from '../../../shared/types/observability.js';
 
 interface DashboardData {
   totalRequests: number;
@@ -63,6 +66,22 @@ export default function Dashboard() {
     return unwrapIpc<GatewayStatus>(await api.gateway.status());
   });
 
+  // A rolling 7-day window powers the two overview panels below the fold (read-only).
+  const { data: cost } = useIPC<CostSummary | null>(async () => {
+    const api = getFreellmApi();
+    if (!api) return null;
+    return api.usage.costSummary(7);
+  });
+
+  const topProviders = useMemo(
+    () =>
+      [...(cost?.byProvider ?? [])]
+        .sort((a, b) => b.requests - a.requests)
+        .slice(0, 6),
+    [cost]
+  );
+  const maxProviderRequests = topProviders.reduce((m, p) => Math.max(m, p.requests), 0);
+
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<number | null>(null);
 
@@ -122,7 +141,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="max-w-5xl">
+    <div className="mx-auto max-w-6xl">
       <div className="mb-6 flex flex-col">
         <h2 className="block text-xl font-bold text-surface-900 tracking-tight">仪表盘</h2>
         <p className="block text-sm text-surface-500 mt-1">免费 LLM 资源一站式管理</p>
@@ -158,7 +177,7 @@ export default function Dashboard() {
       </div>
 
       {/* Bottom row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         {/* Gateway Quick Start */}
         <div className="card card-hover">
           <div className="flex items-center gap-2 mb-3">
@@ -228,6 +247,62 @@ export default function Dashboard() {
             <StatusRow label="数据库" status="running" />
             <StatusRow label="调度器" status="running" />
           </div>
+        </div>
+      </div>
+
+      {/* Overview: 7-day trend + provider leaderboard fill the lower half */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="card lg:col-span-2">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-surface-800">近 7 天用量与节省成本</h3>
+            <span className="text-[11px] text-surface-400">
+              {formatNumber(cost?.requests ?? 0)} 次请求 · 节省 {formatUsd(cost?.savedCostUsd ?? 0)}
+            </span>
+          </div>
+          <TokenCostTrendChart series={cost?.series ?? []} />
+        </div>
+
+        <div className="card">
+          <h3 className="text-sm font-semibold text-surface-800 mb-3">服务商用量榜</h3>
+          {topProviders.length === 0 ? (
+            <div className="flex h-64 flex-col items-center justify-center gap-2 text-center text-xs text-surface-400">
+              <span className="text-2xl" aria-hidden="true">📊</span>
+              近 7 天还没有调用记录
+            </div>
+          ) : (
+            <ul className="space-y-3">
+              {topProviders.map((p, index) => (
+                <li key={p.providerId}>
+                  <div className="flex items-baseline justify-between gap-2 text-xs">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="w-4 shrink-0 text-right font-mono text-[10px] text-surface-400">
+                        {index + 1}
+                      </span>
+                      <span className="truncate font-medium text-surface-700">{p.providerId}</span>
+                    </span>
+                    <span className="shrink-0 tabular-nums text-surface-500">
+                      {formatNumber(p.requests)} 次
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-100">
+                    <div
+                      className="h-full rounded-full bg-primary-500"
+                      style={{
+                        width: `${
+                          maxProviderRequests > 0
+                            ? Math.max(6, (p.requests / maxProviderRequests) * 100)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                  <div className="mt-0.5 text-right text-[10px] text-teal-600">
+                    省 {formatUsd(p.savedCostUsd)} · {formatTokens(p.tokens)} tokens
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>

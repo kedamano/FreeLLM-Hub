@@ -4,6 +4,7 @@ import { numberFromParam, useQueryParams } from '../hooks/useQueryParam';
 import { useProfileChanges } from '../hooks/useProfiles';
 import { ErrorState, LoadingState, EmptyState } from '../components/ErrorBoundary';
 import PageHeader from '../components/PageHeader';
+import PaginationBar from '../components/PaginationBar';
 import { formatDuration, formatNumber, formatPercent, formatTimestamp, formatUsd } from '../lib/format';
 import type {
   AuditDetailResult,
@@ -13,7 +14,8 @@ import type {
   RequestAuditRecord,
 } from '../../../shared/types/observability.js';
 
-const PAGE_SIZE = 25;
+const DEFAULT_PAGE_SIZE = 25;
+const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
 const STATUS_LABELS: Record<AuditStatus, { text: string; className: string }> = {
   in_progress: { text: '进行中', className: 'badge-blue' },
@@ -84,6 +86,7 @@ export default function AuditPage() {
   const page = numberFromParam(params.page, 0, 0);
   const selected = params.request;
 
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   // The draft keeps keystrokes out of the URL; Enter commits the search to it.
   const [pendingSearch, setPendingSearch] = useState(search);
   const [result, setResult] = useState<AuditListResult | null>(null);
@@ -103,15 +106,15 @@ export default function AuditPage() {
 
   const query = useMemo(
     () => ({
-      limit: PAGE_SIZE,
-      offset: page * PAGE_SIZE,
+      limit: pageSize,
+      offset: page * pageSize,
       status: status || undefined,
       providerId: providerId || undefined,
       search: search || undefined,
       failuresOnly: failuresOnly || undefined,
       from: new Date(Date.now() - days * 86400_000).toISOString(),
     }),
-    [page, status, providerId, search, failuresOnly, days]
+    [page, pageSize, status, providerId, search, failuresOnly, days]
   );
 
   const load = useCallback(async () => {
@@ -167,10 +170,10 @@ export default function AuditPage() {
 
   const items = result?.items ?? [];
   const total = result?.total ?? 0;
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <div className="max-w-7xl">
+    <div className="mx-auto max-w-7xl">
       <PageHeader
         title="请求审计"
         description="网关侧每个请求的完整轨迹：为什么选了这个服务商、重试了几次、被拒的原因"
@@ -301,19 +304,22 @@ export default function AuditPage() {
         <div className="card">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold text-surface-800">请求列表</h3>
-            <span className="text-[11px] text-surface-400">共 {formatNumber(total)} 条</span>
+            <span className="text-[11px] text-surface-400">
+              {failuresOnly ? '仅异常 · ' : ''}
+              {formatNumber(total)} 条
+            </span>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+          <div className="max-h-[62vh] overflow-auto rounded-lg">
+            <table className="data-table text-left">
               <thead>
-                <tr className="text-left text-surface-500 border-b border-surface-100">
-                  <th className="pb-2 font-medium">时间</th>
-                  <th className="pb-2 font-medium">路由</th>
-                  <th className="pb-2 font-medium">服务商 / 模型</th>
-                  <th className="pb-2 font-medium">状态</th>
-                  <th className="pb-2 font-medium text-right">尝试</th>
-                  <th className="pb-2 font-medium text-right">延迟</th>
-                  <th className="pb-2 font-medium text-right">Tokens</th>
+                <tr className="text-surface-500">
+                  <th>时间</th>
+                  <th>路由</th>
+                  <th>服务商 / 模型</th>
+                  <th>状态</th>
+                  <th className="text-right">尝试</th>
+                  <th className="text-right">延迟</th>
+                  <th className="text-right">Tokens</th>
                 </tr>
               </thead>
               <tbody>
@@ -330,28 +336,19 @@ export default function AuditPage() {
               </tbody>
             </table>
           </div>
-          {items.length === 0 && !loading ? <EmptyState message="该时间窗内没有请求审计记录" /> : null}
-          <div className="mt-3 flex items-center justify-between text-[11px] text-surface-400">
-            <button
-              type="button"
-              className="btn-ghost"
-              disabled={page === 0}
-              onClick={() => setParams({ page: pageParam(Math.max(0, page - 1)) })}
-            >
-              上一页
-            </button>
-            <span>
-              第 {page + 1} / {pageCount} 页
-            </span>
-            <button
-              type="button"
-              className="btn-ghost"
-              disabled={page + 1 >= pageCount}
-              onClick={() => setParams({ page: pageParam(page + 1) })}
-            >
-              下一页
-            </button>
-          </div>
+          {items.length === 0 && !loading ? <EmptyState message="该时间窗内没有请求审计记录" hint="换个时间窗或清除筛选条件再看看" /> : null}
+          <PaginationBar
+            page={page}
+            pageCount={pageCount}
+            total={total}
+            pageSize={pageSize}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setParams({ page: null });
+            }}
+            onPageChange={(next) => setParams({ page: pageParam(next) })}
+          />
         </div>
 
         <div className="card">
